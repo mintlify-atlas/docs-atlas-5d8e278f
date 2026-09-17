@@ -1,0 +1,597 @@
+---
+title: "POMWright LocatorRegistry and Accessors API Reference"
+sidebarTitle: "LocatorRegistry"
+description: "API reference for LocatorRegistry: createRegistryWithAccessors, 10 strategy methods, accessor types, reusable seeds, resolution modes, and error cases."
+---
+
+The `LocatorRegistry` is the core of POMWright's locator system. It stores typed, dot-delimited path-to-locator
+mappings and provides two resolution modes: `getLocator` for the terminal segment only and `getNestedLocator` for
+the full ancestor chain. Every method is compile-time typed against a `Paths` string union, so typos in path
+literals are caught before the tests run.
+
+---
+
+## `createRegistryWithAccessors`
+
+`createRegistryWithAccessors` is the standard way to create a registry. It binds a Playwright `Page` instance to a
+new `LocatorRegistryInternal`, pre-binds the four most common methods as standalone functions, and returns everything
+as a `const` object for easy destructuring.
+
+```ts
+import { createRegistryWithAccessors } from "pomwright";
+
+type Paths =
+  | "main"
+  | "main.form"
+  | "main.form.username"
+  | "main.form.password"
+  | "main.form.submit";
+
+const { registry, add, getLocator, getNestedLocator, getLocatorSchema } =
+  createRegistryWithAccessors<Paths>(page);
+```
+
+<ParamField path="page" type="Page" required>
+  The Playwright `Page` (or `BrowserContext`) instance that anchors the locator
+  chain. All locators resolved from this registry are scoped to this page.
+</ParamField>
+
+**Return value** — a `const` object with five fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `registry` | `LocatorRegistry<Paths>` | Public registry interface (see below) |
+| `add` | `AddAccessor<Paths>` | Pre-bound `registry.add` |
+| `getLocator` | `GetLocatorAccessor<Paths>` | Pre-bound `registry.getLocator` |
+| `getNestedLocator` | `GetNestedLocatorAccessor<Paths>` | Pre-bound `registry.getNestedLocator` |
+| `getLocatorSchema` | `GetLocatorSchemaAccessor<Paths>` | Pre-bound `registry.getLocatorSchema` |
+
+<Note>
+  Within a `PageObject` subclass, these same methods are already available as
+  `this.add`, `this.getLocator`, `this.getNestedLocator`, and
+  `this.getLocatorSchema` — you do not need to call `createRegistryWithAccessors`
+  directly.
+</Note>
+
+---
+
+## `LocatorRegistry<Paths>` interface
+
+The public `LocatorRegistry<Paths>` type exposes exactly five members. Internal lifecycle methods (`register`,
+`replace`, `get`, `unregister`) exist only on the internal implementation class and are intentionally hidden from
+consumers.
+
+```ts
+type LocatorRegistry<Paths extends string> = Pick<
+  LocatorRegistryInternal<Paths>,
+  "add" | "createReusable" | "getLocator" | "getLocatorSchema" | "getNestedLocator"
+>;
+```
+
+---
+
+## Accessor types
+
+POMWright exports four accessor type aliases for dependency injection and custom wiring. Import them from `"pomwright"`:
+
+```ts
+import type {
+  AddAccessor,
+  GetLocatorAccessor,
+  GetNestedLocatorAccessor,
+  GetLocatorSchemaAccessor,
+  LocatorRegistry,
+} from "pomwright";
+
+class MyPage<Paths extends string> {
+  constructor(
+    public readonly registry: LocatorRegistry<Paths>,
+    public readonly add: AddAccessor<Paths>,
+    public readonly getLocator: GetLocatorAccessor<Paths>,
+    public readonly getNestedLocator: GetNestedLocatorAccessor<Paths>,
+    public readonly getLocatorSchema: GetLocatorSchemaAccessor<Paths>,
+  ) {}
+}
+```
+
+| Type | Signature summary |
+|---|---|
+| `AddAccessor<Paths>` | Same as `LocatorRegistryInternal<Paths>["add"]` |
+| `GetLocatorAccessor<Paths>` | `(path: ValidPath) => Locator` |
+| `GetNestedLocatorAccessor<Paths>` | `(path: ValidPath) => Locator` |
+| `GetLocatorSchemaAccessor<Paths>` | `(path: ValidPath) => LocatorQueryBuilderPublic<Paths, ...>` |
+
+---
+
+## Path validation
+
+Every path passed to `add`, `getLocator`, `getNestedLocator`, or `getLocatorSchema` is validated both at
+compile time (via a recursive conditional type) and at runtime. A valid path is a non-empty, dot-delimited string
+with no leading dot, no trailing dot, no consecutive dots, and no Unicode whitespace characters.
+
+<Tabs>
+  <Tab title="Valid paths">
+    ```ts
+    type Paths =
+      | "main"
+      | "main.form@login"
+      | "main.form@login.input@username"
+      | "main.button@submit";
+    ```
+  </Tab>
+  <Tab title="Invalid paths (compile-time error)">
+    ```ts
+    // Empty string
+    add("");                  // ❌ "String can't be empty"
+
+    // Leading dot
+    add(".main");             // ❌ "String can't start with '.'"
+
+    // Trailing dot
+    add("main.");             // ❌ "String can't end with '.'"
+
+    // Consecutive dots
+    add("main..form");        // ❌ "String can't contain consecutive '.'"
+
+    // Whitespace
+    add("main .form");        // ❌ "String can't contain whitespace chars"
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## `add(path)` — registering locators
+
+`add(path)` begins a registration chain. Call exactly one strategy method to define the locator, then optionally
+chain `filter()`, `nth()`, and `describe()`.
+
+```ts
+registry.add("main").locator("main");
+registry.add("main.form").getByRole("form", { name: "Login" });
+registry.add("main.form.username").getByLabel("Username");
+registry.add("main.form.password").getByLabel("Password");
+registry.add("main.form.submit").getByRole("button", { name: "Submit" });
+```
+
+<Warning>
+  Each path may be registered only once. Calling `add` with a duplicate path
+  throws with the existing schema printed in the error message.
+</Warning>
+
+### Strategy methods
+
+Each registration accepts exactly one strategy. Calling a second strategy on the same `add` chain (without reuse)
+throws at runtime.
+
+<Accordion title="getByRole(role, options?)">
+  Uses `Page.getByRole` semantics.
+
+  ```ts
+  registry.add("nav.home").getByRole("link", { name: "Home" });
+  registry.add("form.submit").getByRole("button", { name: "Submit" });
+  ```
+
+  <ParamField path="role" type="AriaRole" required>
+    ARIA role string, e.g. `"button"`, `"link"`, `"heading"`, `"listitem"`.
+  </ParamField>
+  <ParamField path="options" type="ByRoleOptions">
+    Optional Playwright `getByRole` options such as `name`, `level`, `exact`.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getByText(text, options?)">
+  Uses `Page.getByText` semantics. Accepts `string` or `RegExp`.
+
+  ```ts
+  registry.add("alert.error").getByText(/failed/i);
+  registry.add("banner.title").getByText("Welcome", { exact: true });
+  ```
+
+  <ParamField path="text" type="string | RegExp" required>
+    Text content to match.
+  </ParamField>
+  <ParamField path="options" type="{ exact?: boolean }">
+    Optional exact-match flag.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getByLabel(text, options?)">
+  Uses `Page.getByLabel` semantics.
+
+  ```ts
+  registry.add("form.email").getByLabel("Email", { exact: true });
+  ```
+
+  <ParamField path="text" type="string | RegExp" required>
+    Label text to match.
+  </ParamField>
+  <ParamField path="options" type="{ exact?: boolean }">
+    Optional exact-match flag.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getByPlaceholder(text, options?)">
+  Uses `Page.getByPlaceholder` semantics.
+
+  ```ts
+  registry.add("form.search").getByPlaceholder("Search…", { exact: true });
+  ```
+
+  <ParamField path="text" type="string | RegExp" required>
+    Placeholder text to match.
+  </ParamField>
+  <ParamField path="options" type="{ exact?: boolean }">
+    Optional exact-match flag.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getByAltText(text, options?)">
+  Uses `Page.getByAltText` semantics.
+
+  ```ts
+  registry.add("image.logo").getByAltText(/brand/);
+  ```
+
+  <ParamField path="text" type="string | RegExp" required>
+    Alt-text to match.
+  </ParamField>
+  <ParamField path="options" type="{ exact?: boolean }">
+    Optional exact-match flag.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getByTitle(text, options?)">
+  Uses `Page.getByTitle` semantics.
+
+  ```ts
+  registry.add("icon.info").getByTitle("Info");
+  ```
+
+  <ParamField path="text" type="string | RegExp" required>
+    Title attribute text to match.
+  </ParamField>
+  <ParamField path="options" type="{ exact?: boolean }">
+    Optional exact-match flag.
+  </ParamField>
+</Accordion>
+
+<Accordion title="locator(selector, options?)">
+  Uses `Page.locator` semantics. Accepts any CSS, XPath, or text selector.
+
+  ```ts
+  registry.add("list.items").locator("ul > li");
+  registry.add("main").locator("main", { hasText: /Dashboard/ });
+  ```
+
+  <ParamField path="selector" type="string" required>
+    CSS, XPath, or Playwright selector string.
+  </ParamField>
+  <ParamField path="options" type="LocatorOptions">
+    Optional Playwright `locator` options such as `has`, `hasText`, `hasNot`.
+  </ParamField>
+</Accordion>
+
+<Accordion title="frameLocator(selector)">
+  Enters an iframe. Non-terminal frame segments set the resolution context for
+  their descendants. Terminal frame segments resolve to the iframe **owner
+  locator** (the `<iframe>` element itself), not the frame interior.
+
+  ```ts
+  registry.add("shell.frame@auth").frameLocator("iframe#auth");
+  registry.add("shell.frame@auth.username").getByLabel("Username");
+  ```
+
+  <ParamField path="selector" type="string" required>
+    CSS selector targeting the `<iframe>` element.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getByTestId(testId)">
+  Uses `Page.getByTestId` semantics. The attribute name is controlled by
+  Playwright's `testIdAttribute` config option (default `data-testid`).
+
+  ```ts
+  registry.add("card.title").getByTestId("card-title");
+  ```
+
+  <ParamField path="testId" type="string | RegExp" required>
+    Test-ID value to match.
+  </ParamField>
+</Accordion>
+
+<Accordion title="getById(id)">
+  Targets elements by their `id` attribute with automatic string normalization.
+
+  ```ts
+  registry.add("modal.close").getById("close-modal");
+  registry.add("modal.close2").getById("#close-modal");  // same as above
+  registry.add("modal.dynamic").getById(/modal-/);
+  ```
+
+  **String normalization rules:**
+  - `"#login"` → strips `#`, resolves as `locator('#login')`
+  - `"id=login"` → strips `id=`, resolves as `locator('#login')`
+  - `"login"` → used directly as `locator('#login')`
+
+  **RegExp behavior:** `getById(/panel-/)` compiles to `locator('[id*="panel-"]')` — this
+  is substring matching on the `id` attribute value, not runtime regex evaluation.
+
+  <ParamField path="id" type="string | RegExp" required>
+    Element ID string (with or without `#`/`id=` prefix) or a `RegExp` for substring matching.
+  </ParamField>
+</Accordion>
+
+### Post-definition chain methods
+
+After any strategy method, the builder returns a post-definition view that exposes three additional methods. All
+three can be chained in any order and repeated multiple times.
+
+<ParamField path="filter(filterDefinition)" type="method">
+  Appends a Playwright-style filter to the locator. Filters are applied in the
+  order they are chained.
+
+  ```ts
+  registry
+    .add("list.item")
+    .getByRole("listitem")
+    .filter({ hasText: /Row/ })
+    .filter({ hasNot: page.locator(".disabled") });
+  ```
+
+  The `has` and `hasNot` fields accept either a Playwright `Locator` **or** a
+  registry path string. When a path string is provided, POMWright resolves the
+  terminal locator for that path (no ancestor chaining). Pass
+  `registry.getNestedLocator(path)` explicitly if you need the full chain.
+
+  <Warning>
+    Cyclic filter references (path A → filter has path B → filter has path A) are
+    detected at resolution time and throw:
+    `Detected cyclic filter reference while resolving "...": "...".`
+  </Warning>
+</ParamField>
+
+<ParamField path="nth(index)" type="method">
+  Appends an index selector. Accepts a `number`, `"first"`, or `"last"`.
+
+  ```ts
+  registry.add("table.row").locator("tr").nth(0);
+  registry.add("list.last-item").locator("li").nth("last");
+  ```
+</ParamField>
+
+<ParamField path="describe(description)" type="method">
+  Stores an explicit Playwright locator description for this path. Overrides the
+  default path-string description applied at resolution time.
+
+  ```ts
+  registry
+    .add("form.submit")
+    .getByRole("button", { name: "Submit" })
+    .describe("Primary submit button");
+  ```
+</ParamField>
+
+---
+
+## `createReusable` — reusable locator seeds
+
+`registry.createReusable` is a factory that captures a locator strategy plus any chained steps into a **seed
+object** without registering it. Seeds are immutable — using a seed in multiple `add` calls never mutates the seed.
+
+### Creating a seed
+
+```ts
+const h2 = registry.createReusable
+  .getByRole("heading", { level: 2 })
+  .filter({ hasText: /Summary/ });
+
+const firstRow = registry.createReusable
+  .locator("tr")
+  .nth(0)
+  .describe("First table row");
+```
+
+The factory exposes the same ten strategy methods as `add`, followed by the same `filter`, `nth`, and `describe`
+chain methods.
+
+### Reuse by seed object — `{ reuse: seed }`
+
+Pass a seed to `add` via `{ reuse: seed }`. The seeded definition and steps are persisted immediately. You may then
+provide **one optional matching-strategy override** (same `type`) to patch options — all arguments become optional in
+that call (PATCH semantics).
+
+```ts
+const headingSeed = registry.createReusable.getByRole("heading", { level: 2 });
+
+// Use the seed as-is
+registry.add("hero.title", { reuse: headingSeed });
+
+// Patch the name option
+registry.add("hero.subtitle", { reuse: headingSeed }).getByRole({ name: "Subtitle" });
+
+// Chain additional steps
+registry.add("hero.title@first", { reuse: headingSeed }).nth(0);
+```
+
+<Warning>
+  Providing a strategy call with a **different** `type` than the seed throws
+  immediately:
+  `The locator definition for "..." must use the "..." strategy when reusing a locator.`
+
+  Providing **more than one** strategy override in the same chain also throws:
+  `A locator definition for "..." was already provided from reuse; only one matching override is allowed.`
+</Warning>
+
+### Reuse by path string — `{ reuse: "path" }`
+
+Pass an existing registered path string to clone its definition, steps, and explicit description.
+
+```ts
+registry.add("errors.invalidPassword").getByText("Invalid password");
+
+// Clones definition + steps from "errors.invalidPassword"
+registry.add("form.error@invalidPassword", { reuse: "errors.invalidPassword" });
+```
+
+Path-based reuse registers immediately and returns `void` — no further chaining is available. The reused path
+cannot be the same as the registration path.
+
+---
+
+## `getLocator(path)` — terminal resolution
+
+`getLocator(path)` resolves only the terminal definition and its recorded steps. Ancestor segments are **not**
+traversed. The resulting locator is equivalent to calling the strategy method directly from the `page` context.
+
+```ts
+registry.add("form.username").getByLabel("Username");
+
+const terminal = registry.getLocator("form.username");
+// Equivalent: page.getByLabel("Username")
+// terminal.description() === "form.username"
+```
+
+<ParamField path="path" type="Paths" required>
+  A registered path literal. TypeScript will reject invalid path formats at
+  compile time.
+</ParamField>
+
+**Returns** `Locator`
+
+---
+
+## `getNestedLocator(path)` — chained resolution
+
+`getNestedLocator(path)` traverses every registered ancestor segment from the root to the terminal path, applying
+each segment's steps in order. Segments that exist in the path string but have no registration are silently skipped
+(sparse chain behavior).
+
+```ts
+registry.add("main").locator("main");
+registry.add("main.form").getByRole("form", { name: "Login" });
+registry.add("main.form.username").getByLabel("Username");
+
+const nested = registry.getNestedLocator("main.form.username");
+// Resolves as: page.locator("main")
+//                .getByRole("form", { name: "Login" })
+//                .getByLabel("Username")
+// nested.description() === "main.form.username"
+```
+
+<ParamField path="path" type="Paths" required>
+  A registered path literal.
+</ParamField>
+
+**Returns** `Locator`
+
+### Frame locator behavior
+
+A `frameLocator` segment behaves differently depending on its position in the chain:
+
+| Position | Behavior |
+|---|---|
+| Non-terminal | Resolution context enters the frame; descendants query inside the frame |
+| Terminal | Resolves to the iframe **owner locator** (`frameLocator.owner()`) |
+
+```ts
+registry.add("shell.frame@login").frameLocator("iframe#login");
+registry.add("shell.frame@login.username").getByLabel("Username");
+
+// Terminal frame → owner locator (the <iframe> element)
+const frameOwner = registry.getNestedLocator("shell.frame@login");
+
+// Non-terminal frame → queries inside the frame
+const insideFrame = registry.getNestedLocator("shell.frame@login.username");
+```
+
+### Sparse chain behavior
+
+If an intermediate path segment exists as a string component of the path but has no registered schema, it is
+skipped during traversal. Only the terminal segment is required to be registered — a missing terminal path throws.
+
+```ts
+// "main.section" is not registered — resolution skips it silently
+registry.add("main").locator("main");
+registry.add("main.section.button").getByRole("button");
+
+const locator = registry.getNestedLocator("main.section.button");
+// Resolves as: page.locator("main").getByRole("button")
+```
+
+---
+
+## `getLocatorSchema(path)` — query builder
+
+`getLocatorSchema(path)` creates a mutable clone of the registered chain rooted at `path`. All modifications
+(filters, index selectors, definition updates, removals) affect only the clone. The registry's stored schemas are
+never mutated.
+
+```ts
+const locator = registry
+  .getLocatorSchema("main.form.username")
+  .filter({ hasText: /Username/ })
+  .nth(0)
+  .getNestedLocator();
+
+// Registry schema for "main.form.username" is unchanged.
+```
+
+<ParamField path="path" type="Paths" required>
+  A registered path. The path must have a registration at the terminal segment;
+  if not, construction throws: `No locator schema registered for path "...".`
+</ParamField>
+
+**Returns** `LocatorQueryBuilderPublic<Paths, Path>` — see the [Schema Builder reference](/api/locator-schema-builder) for the full method list.
+
+---
+
+## `describe` semantics
+
+Every resolved locator receives the terminal path string as its Playwright description unless overridden.
+
+```ts
+registry.add("main.button@login").getByRole("button", { name: "Login" });
+
+registry.getLocator("main.button@login").description();
+// → "main.button@login"
+
+registry.getNestedLocator("main.button@login").description();
+// → "main.button@login"
+```
+
+A description set via `.describe(...)` during `add` overrides the path default permanently for that registration.
+A description set on a `getLocatorSchema(...)` builder overrides it only for that builder's resolution.
+
+```ts
+registry
+  .add("main.submit")
+  .getByRole("button", { name: "Submit" })
+  .describe("Primary submit button");
+
+registry.getLocator("main.submit").description();
+// → "Primary submit button"
+
+registry
+  .getLocatorSchema("main.submit")
+  .describe("Temporary override")
+  .getLocator()
+  .description();
+// → "Temporary override"
+// Registry description is still "Primary submit button"
+```
+
+---
+
+## Error reference
+
+| Error message | Cause |
+|---|---|
+| `No locator schema registered for path "...".` | Path was never registered, or `getLocatorSchema` was called with an unregistered terminal. |
+| `A locator schema with the path "..." already exists.` | Duplicate `add` call for the same path. |
+| `A locator definition must be provided before applying filters or indices for "...".` | `filter` or `nth` was called on a registration before any strategy method. |
+| `A locator definition for "..." has already been provided; only one locator type can be set for a registration.` | Multiple strategy methods called on the same non-reuse `add` chain. |
+| `The locator definition for "..." must use the "..." strategy when reusing a locator.` | Mismatched strategy override while using `{ reuse: seed }`. |
+| `A locator definition for "..." was already provided from reuse; only one matching override is allowed.` | More than one strategy override in the same reuse chain. |
+| `Locator reuse path cannot be the same as registration path: "...".` | `add(path, { reuse: path })` used identical source and target paths. |
+| `Detected cyclic filter reference while resolving "...": "...".` | A `has`/`hasNot` path reference cycled back to an active path resolution. |

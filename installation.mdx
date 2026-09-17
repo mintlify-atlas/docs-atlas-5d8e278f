@@ -1,0 +1,125 @@
+---
+title: "Installing POMWright in a Playwright TypeScript Project"
+sidebarTitle: "Installation"
+description: "Install POMWright, understand peer dependencies and TypeScript requirements, and explore every symbol exported from the pomwright package."
+---
+
+POMWright is published to npm as the `pomwright` package. It is a dev dependency that sits alongside your existing `@playwright/test` installation — there is no configuration file to create and no Playwright config changes required. Install it, import what you need, and start building typed Page Objects immediately.
+
+## Peer Dependency
+
+POMWright requires `@playwright/test` as a peer dependency. It is compatible with the range below:
+
+```
+@playwright/test >=1.57.0 <2.0.0
+```
+
+Your project must already have a compatible version of `@playwright/test` installed before adding POMWright. If your Playwright version falls outside the supported range, upgrade it first.
+
+## Install Commands
+
+<CodeGroup>
+
+```bash npm
+npm install --save-dev pomwright
+```
+
+```bash pnpm
+pnpm add -D pomwright
+```
+
+```bash yarn
+yarn add --dev pomwright
+```
+
+```bash bun
+bun add --dev pomwright
+```
+
+</CodeGroup>
+
+## TypeScript Requirements
+
+POMWright is written in TypeScript and ships its own type declarations. No `@types/pomwright` package is needed. The package targets the TypeScript 5.x compiler. Your `tsconfig.json` must include `"experimentalDecorators": true` to use the `@step()` decorator, which wraps class methods in `test.step`.
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "strict": true
+  }
+}
+```
+
+<Note>
+  If you are using TypeScript 5.0+ with the new ECMAScript decorator standard (`"experimentalDecorators": false`), the `@step()` decorator still requires `"experimentalDecorators": true` because it relies on the legacy TypeScript decorator metadata format used by Playwright's `test.step` integration.
+</Note>
+
+## Package Exports
+
+All public symbols are importable directly from `'pomwright'`. The table below describes what is exported and what it is for.
+
+<Accordion title="View all exports from 'pomwright'">
+
+| Export | Kind | Description |
+|---|---|---|
+| `test` | Fixture | Playwright `base.extend` fixture that includes a pre-wired `log: PlaywrightReportLogger` instance. Extend or use directly. |
+| `PageObject` | Class | Abstract base class for Page Objects. Provides typed locator accessors, `navigation`, and `sessionStorage`. |
+| `SessionStorage` | Class | Standalone session storage helper. Available via `PageObject.sessionStorage` or direct instantiation. |
+| `PlaywrightReportLogger` | Class | Structured logger that attaches log entries to Playwright HTML reports. |
+| `step` | Decorator | Method decorator that wraps class methods in `test.step` with automatic `ClassName.methodName` titles. |
+| `createRegistryWithAccessors` | Function | Factory that creates a `LocatorRegistry` plus bound `add`, `getLocator`, `getNestedLocator`, and `getLocatorSchema` accessors — for use without `PageObject`. |
+| `LocatorRegistry` | Type | The typed registry interface. Use when passing the registry to external functions (e.g., in composable locator modules). |
+| `AddAccessor` | Type | Type for the `add(path)` function returned by `createRegistryWithAccessors`. |
+| `GetLocatorAccessor` | Type | Type for the `getLocator(path)` function. |
+| `GetNestedLocatorAccessor` | Type | Type for the `getNestedLocator(path)` function. |
+| `GetLocatorSchemaAccessor` | Type | Type for the `getLocatorSchema(path)` schema-builder accessor. |
+| `NavigationOptions` | Type | Options accepted by the navigation helper constructor. |
+| `UrlTypeOptions` | Type | Generic options type controlling whether `baseUrl` and `urlPath` are `string` or `RegExp`. |
+| `BaseUrlTypeFromOptions` | Type | Utility type that extracts the `baseUrl` type from `UrlTypeOptions`. |
+| `UrlPathTypeFromOptions` | Type | Utility type that extracts the `urlPath` type from `UrlTypeOptions`. |
+| `FullUrlTypeFromOptions` | Type | Utility type that extracts the `fullUrl` type from `UrlTypeOptions`. |
+| `LogEntry` | Type | Shape of a single log entry produced by `PlaywrightReportLogger`. |
+| `LogLevel` | Type | Union of valid log level strings (`"debug"`, `"info"`, `"warn"`, `"error"`). |
+
+</Accordion>
+
+A typical import pulling in the most common symbols looks like this:
+
+```ts
+import { PageObject, step, PlaywrightReportLogger } from "pomwright";
+import type {
+  LocatorRegistry,
+  LogEntry,
+  LogLevel,
+  NavigationOptions,
+} from "pomwright";
+```
+
+## No Configuration File
+
+POMWright does not require a `pomwright.config.ts` or any additions to `playwright.config.ts`. Every feature is opt-in at the import level. The `PageObject` base class, the `LocatorRegistry`, `SessionStorage`, logging, and the `@step()` decorator are all independent — use only the pieces you need.
+
+<Tip>
+  If you want to try POMWright incrementally without converting existing Page Objects, start with the standalone helpers. Import `SessionStorage` directly into a test, use `step` on any class method, or wire `PlaywrightReportLogger` as a fixture on its own. Each helper works independently of `PageObject` and of each other.
+</Tip>
+
+## Verify the Installation
+
+After installing, create a minimal check to confirm imports resolve correctly:
+
+```ts verify-install.ts
+import { PageObject, step, SessionStorage, PlaywrightReportLogger } from "pomwright";
+import type { LocatorRegistry, LogLevel } from "pomwright";
+
+// If this file compiles without error, POMWright is installed correctly.
+console.log("POMWright imports resolved successfully.");
+```
+
+Run with:
+
+```bash
+npx tsc --noEmit verify-install.ts
+```
+
+A clean exit with no errors confirms POMWright is installed and your TypeScript configuration is compatible.

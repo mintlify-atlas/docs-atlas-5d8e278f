@@ -1,0 +1,527 @@
+---
+title: "PageObject Abstract Class — POMWright API Reference"
+sidebarTitle: "PageObject"
+description: "Full API reference for the PageObject abstract class: generics, constructor, URL typing, properties, abstract methods, and navigation helpers."
+---
+
+`PageObject` is the central abstraction in POMWright. Every page you model extends it to receive a typed locator registry, a navigation helper, a session storage helper, and structured step logging — all wired together automatically at construction time. You supply two things: a `defineLocators()` implementation that registers every locator the page needs, and a `pageActionsToPerformAfterNavigation()` implementation that lists async callbacks to run after navigation settles.
+
+## Class Signature
+
+The class is generic over two parameters. `LocatorSchemaPathType` constrains the locator registry to a literal string union you define, catching typos and missing paths at compile time. `Options` controls how `baseUrl`, `urlPath`, and `fullUrl` are typed — defaulting to all-string URLs that unlock the full navigation API.
+
+```ts
+export abstract class PageObject<
+  LocatorSchemaPathType extends string,
+  Options extends UrlTypeOptions = { baseUrlType: string; urlPathType: string },
+>
+```
+
+### `LocatorSchemaPathType`
+
+A dot-delimited literal string union. Every key you pass to `add`, `getLocator`, `getNestedLocator`, or `getLocatorSchema` must belong to this union. The registry validates membership both at compile time and at runtime.
+
+```ts
+type LoginPaths =
+  | "common.spinner"
+  | "main"
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+```
+
+### `Options` — `UrlTypeOptions`
+
+Controls the TypeScript types of `baseUrl`, `urlPath`, and the derived `fullUrl`. When either value is `RegExp`, `fullUrl` becomes a `RegExp` and navigation is limited to URL assertions only.
+
+```ts
+export type UrlTypeOptions = {
+  baseUrlType?: string | RegExp;
+  urlPathType?: string | RegExp;
+};
+```
+
+#### Derived URL types
+
+| Utility type | Resolution rule |
+|---|---|
+| `BaseUrlTypeFromOptions<T>` | `RegExp` if `T` has `baseUrlType: RegExp`; otherwise `string` |
+| `UrlPathTypeFromOptions<T>` | `RegExp` if `T` has `urlPathType: RegExp`; otherwise `"" \| string` |
+| `FullUrlTypeFromOptions<T>` | `RegExp` if either `baseUrlType` or `urlPathType` is `RegExp`; otherwise `string` |
+
+```ts
+export type BaseUrlTypeFromOptions<T extends UrlTypeOptions> =
+  T extends { baseUrlType: RegExp } ? RegExp : string;
+
+export type UrlPathTypeFromOptions<T extends UrlTypeOptions> =
+  T extends { urlPathType: RegExp } ? RegExp : "" | string;
+
+export type FullUrlTypeFromOptions<T extends UrlTypeOptions> =
+  T extends { baseUrlType: RegExp } | { urlPathType: RegExp }
+    ? RegExp
+    : string;
+```
+
+---
+
+## Constructor
+
+The constructor is `protected`, meaning you must call it via `super(...)` from your subclass. You never instantiate `PageObject` directly.
+
+```ts
+protected constructor(
+  page: Page,
+  baseUrl: BaseUrlTypeFromOptions<Options>,
+  urlPath: UrlPathTypeFromOptions<Options>,
+  options?: { label?: string; navOptions?: NavigationOptions },
+)
+```
+
+<ParamField path="page" type="Page" required>
+  The Playwright `Page` instance injected from a fixture. Bound to the locator registry, session storage, and navigation helper.
+</ParamField>
+
+<ParamField path="baseUrl" type="string | RegExp" required>
+  The base URL for this page (e.g. `"https://example.com"`). Type is narrowed by `BaseUrlTypeFromOptions<Options>`.
+</ParamField>
+
+<ParamField path="urlPath" type="string | RegExp" required>
+  The URL path segment (e.g. `"/login"`). Type is narrowed by `UrlPathTypeFromOptions<Options>`. Pass `""` for the root path.
+</ParamField>
+
+<ParamField path="options" type="{ label?: string; navOptions?: NavigationOptions }">
+  Optional configuration object.
+
+  <Expandable title="options properties">
+    <ParamField path="options.label" type="string">
+      Human-readable label used as a prefix in navigation step titles and session storage log entries. Defaults to `this.constructor.name` when omitted.
+    </ParamField>
+
+    <ParamField path="options.navOptions" type="NavigationOptions">
+      Default navigation options applied to every call on `this.navigation` unless overridden per-call. See [NavigationOptions](#navigationoptions) below.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Public Properties
+
+The following properties are set during construction and are all `readonly`.
+
+| Property | Type | Description |
+|---|---|---|
+| `page` | `Page` | Playwright `Page` instance passed to the constructor. |
+| `baseUrl` | `BaseUrlTypeFromOptions<Options>` | The base URL; `string` or `RegExp` based on `Options`. |
+| `urlPath` | `UrlPathTypeFromOptions<Options>` | The URL path segment; `string` or `RegExp` based on `Options`. |
+| `fullUrl` | `FullUrlTypeFromOptions<Options>` | Composed from `baseUrl + urlPath`. `RegExp` if either part is `RegExp`; otherwise `string`. |
+| `label` | `string` | Label used for navigation and session storage step names. |
+| `sessionStorage` | `SessionStorage` | Session storage helper pre-labeled with `label`. |
+| `navigation` | `ExtractNavigationType<FullUrlTypeFromOptions<Options>>` | Navigation helper. Exposes `goto`/`gotoThisPage` only when `fullUrl` is a `string`. |
+| `add` | `AddAccessor<LocatorSchemaPathType>` | Registry method for defining locators in `defineLocators()`. |
+| `getLocator` | `GetLocatorAccessor<LocatorSchemaPathType>` | Resolves the **terminal** locator for a path (no ancestor chaining). |
+| `getNestedLocator` | `GetNestedLocatorAccessor<LocatorSchemaPathType>` | Resolves the **fully chained** locator by traversing every ancestor in the path. |
+| `getLocatorSchema` | `GetLocatorSchemaAccessor<LocatorSchemaPathType>` | Returns a mutable builder clone to add filters, indices, or update definitions before resolving. |
+
+<Note>
+  `locatorRegistry` is `protected readonly` — it is accessible inside subclasses but not from the outside. Use `add`, `getLocator`, `getNestedLocator`, and `getLocatorSchema` instead.
+</Note>
+
+---
+
+## Abstract Methods
+
+Both methods are `protected abstract` and must be implemented by every subclass. POMWright calls `defineLocators()` synchronously in the constructor, and the return value of `pageActionsToPerformAfterNavigation()` is captured for use by `gotoThisPage()` and `expectThisPage()`.
+
+### `defineLocators()`
+
+Register every locator path the page uses. Called automatically during construction, before `navigation` is created.
+
+```ts
+protected abstract defineLocators(): void;
+```
+
+Use the `add` accessor to register each path with a Playwright locator strategy:
+
+```ts
+protected defineLocators(): void {
+  this.add("common.spinner").getByTestId("loading-spinner");
+  this.add("main").locator("main");
+  this.add("main.form@login").getByRole("form", { name: "Login" });
+  this.add("main.form@login.input@username").getByLabel("Username");
+  this.add("main.form@login.input@password").getByLabel("Password");
+  this.add("main.button@login").getByRole("button", { name: "Login" });
+}
+```
+
+### `pageActionsToPerformAfterNavigation()`
+
+Return an array of async callbacks to execute after `gotoThisPage()` or `expectThisPage()` confirms the URL. Return `null` to skip post-navigation actions entirely, or `[]` for an empty list.
+
+```ts
+protected abstract pageActionsToPerformAfterNavigation():
+  | (() => Promise<void>)[]
+  | null;
+```
+
+A typical implementation waits for a loading indicator to disappear and a key element to become visible:
+
+```ts
+protected pageActionsToPerformAfterNavigation() {
+  return [
+    async () => {
+      await expect(this.getLocator("common.spinner")).toHaveCount(0);
+      await this.getNestedLocator("main.form@login").waitFor({ state: "visible" });
+    },
+  ];
+}
+```
+
+---
+
+## Navigation
+
+The `navigation` property is a helper typed by `fullUrl`. When `fullUrl` is a `string`, all four navigation methods are available. When `fullUrl` is a `RegExp`, only the assertion methods are available.
+
+### `NavigationOptions`
+
+```ts
+export type NavigationOptions = {
+  waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit";
+  waitForLoadState?: "load" | "domcontentloaded" | "networkidle";
+};
+```
+
+| Property | Default | Description |
+|---|---|---|
+| `waitUntil` | `"load"` | Passed to Playwright's `page.goto()` and `page.waitForURL()`. |
+| `waitForLoadState` | `"load"` | Passed to `page.waitForLoadState()` inside `expectAnotherPage()`. |
+
+You can set defaults via the constructor's `navOptions` option and override them at the call site:
+
+```ts
+// Set page-level defaults in the constructor
+super(page, "https://example.com", "/orders", {
+  navOptions: { waitUntil: "domcontentloaded", waitForLoadState: "domcontentloaded" },
+});
+
+// Override for a specific call
+await ordersPage.navigation.gotoThisPage({ waitUntil: "load" });
+```
+
+### When `fullUrl` is a `string` — `NavigationString`
+
+All four methods are available.
+
+<Tabs>
+  <Tab title="goto">
+    Navigate to an arbitrary URL or path. If the argument starts with `"/"`, it is automatically prefixed with `baseUrl`.
+
+    ```ts
+    navigation.goto(urlPathOrUrl: string, options?: NavigationOptions): Promise<void>
+    ```
+
+    ```ts
+    await loginPage.navigation.goto("/login");
+    await loginPage.navigation.goto("https://other.example.com/page");
+    ```
+  </Tab>
+  <Tab title="gotoThisPage">
+    Navigate to `fullUrl` and then run all callbacks returned by `pageActionsToPerformAfterNavigation()`.
+
+    ```ts
+    navigation.gotoThisPage(options?: NavigationOptions): Promise<void>
+    ```
+
+    ```ts
+    await loginPage.navigation.gotoThisPage();
+    await loginPage.navigation.gotoThisPage({ waitUntil: "domcontentloaded" });
+    ```
+  </Tab>
+  <Tab title="expectThisPage">
+    Assert that the browser is currently on `fullUrl` and run post-navigation callbacks. Works with both `string` and `RegExp` `fullUrl`.
+
+    ```ts
+    navigation.expectThisPage(options?: NavigationOptions): Promise<void>
+    ```
+
+    ```ts
+    await loginPage.navigation.expectThisPage();
+    ```
+  </Tab>
+  <Tab title="expectAnotherPage">
+    Assert that the browser has navigated away from `fullUrl`. Works with both `string` and `RegExp` `fullUrl`.
+
+    ```ts
+    navigation.expectAnotherPage(options?: NavigationOptions): Promise<void>
+    ```
+
+    ```ts
+    await loginPage.navigation.expectAnotherPage();
+    ```
+  </Tab>
+</Tabs>
+
+### When `fullUrl` is a `RegExp` — `NavigationRegExp`
+
+Only assertion methods are available. `goto` and `gotoThisPage` are not present on the type.
+
+<Tabs>
+  <Tab title="expectThisPage">
+    Wait for the current URL to match the `RegExp` `fullUrl`, then run post-navigation callbacks.
+
+    ```ts
+    navigation.expectThisPage(options?: NavigationOptions): Promise<void>
+    ```
+
+    ```ts
+    await accountPage.navigation.expectThisPage();
+    ```
+  </Tab>
+  <Tab title="expectAnotherPage">
+    Assert that the current URL does **not** match the `RegExp` `fullUrl`.
+
+    ```ts
+    navigation.expectAnotherPage(options?: NavigationOptions): Promise<void>
+    ```
+
+    ```ts
+    await accountPage.navigation.expectAnotherPage();
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## URL Typing Examples
+
+The `Options` generic determines which navigation methods are available at compile time.
+
+<Tabs>
+  <Tab title="All-string URLs">
+    When both `baseUrl` and `urlPath` are strings, `fullUrl` is a `string` and the full `NavigationString` interface is available.
+
+    ```ts
+    import { type Page } from "@playwright/test";
+    import { PageObject } from "pomwright";
+
+    export class ProfilePage extends PageObject<"main"> {
+      constructor(page: Page) {
+        super(page, "https://example.com", "/profile", {
+          label: "ProfilePage",
+        });
+      }
+
+      protected defineLocators(): void {
+        this.add("main").locator("main");
+      }
+
+      protected pageActionsToPerformAfterNavigation() {
+        return [];
+      }
+    }
+
+    // All four methods available:
+    await profilePage.navigation.gotoThisPage();
+    await profilePage.navigation.goto("/profile?tab=settings");
+    await profilePage.navigation.expectThisPage();
+    await profilePage.navigation.expectAnotherPage();
+    ```
+  </Tab>
+  <Tab title="RegExp urlPath">
+    When `urlPath` is a `RegExp`, `fullUrl` becomes a `RegExp`. Navigation is limited to `expectThisPage` and `expectAnotherPage`.
+
+    ```ts
+    import { type Page } from "@playwright/test";
+    import { PageObject } from "pomwright";
+
+    type UrlOptions = { baseUrlType: string; urlPathType: RegExp };
+
+    export class AccountPage extends PageObject<"main", UrlOptions> {
+      constructor(page: Page) {
+        super(page, "https://example.com", /\/account\/.+/, {
+          label: "AccountPage",
+        });
+      }
+
+      protected defineLocators(): void {
+        this.add("main").locator("main");
+      }
+
+      protected pageActionsToPerformAfterNavigation() {
+        return [];
+      }
+    }
+
+    // Only assertion methods available — goto/gotoThisPage are not on the type:
+    await accountPage.navigation.expectThisPage();
+    await accountPage.navigation.expectAnotherPage();
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+  The `fullUrl` composition rules are:
+  - `string` + `string` → concatenated `string`
+  - `string` + `RegExp` → `new RegExp("^" + escapedBase + path.source)`
+  - `RegExp` + `string` → `new RegExp(base.source + escapedPath + "$")`
+  - `RegExp` + `RegExp` → `new RegExp(base.source + path.source)`
+</Info>
+
+---
+
+## Full Example — `LoginPage`
+
+The example below demonstrates a complete `PageObject` subclass: path union definition, constructor, `defineLocators`, post-navigation actions, and a `@step()`-decorated action method.
+
+```ts
+import { expect, type Page } from "@playwright/test";
+import { PageObject, step } from "pomwright";
+
+type LoginPaths =
+  | "common.spinner"
+  | "main"
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+
+type User = { username: string; password: string };
+
+export class LoginPage extends PageObject<LoginPaths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login", {
+      label: "LoginPage",
+    });
+  }
+
+  protected defineLocators(): void {
+    this.add("common.spinner").getByTestId("loading-spinner");
+    this.add("main").locator("main");
+    this.add("main.form@login").getByRole("form", { name: "Login" });
+    this.add("main.form@login.input@username").getByLabel("Username");
+    this.add("main.form@login.input@password").getByLabel("Password");
+    this.add("main.button@login").getByRole("button", { name: "Login" });
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [
+      async () => {
+        await expect(this.getLocator("common.spinner")).toHaveCount(0);
+        await this.getNestedLocator("main.form@login").waitFor({
+          state: "visible",
+        });
+      },
+    ];
+  }
+
+  @step()
+  async loginAsUser(user: User): Promise<void> {
+    await this.getNestedLocator("main.form@login.input@username").fill(
+      user.username
+    );
+    await this.getNestedLocator("main.form@login.input@password").fill(
+      user.password
+    );
+    await this.getNestedLocator("main.button@login").click();
+  }
+}
+```
+
+### Wiring into a Playwright fixture
+
+```ts
+import { test as base, type Page } from "@playwright/test";
+import { LoginPage } from "./login.page";
+
+type Fixtures = { loginPage: LoginPage };
+
+export const test = base.extend<Fixtures>({
+  loginPage: async ({ page }, use) => {
+    await use(new LoginPage(page as Page));
+  },
+});
+```
+
+### Using the page in a test
+
+```ts
+import { test } from "./fixtures";
+
+test("user can log in", async ({ loginPage }) => {
+  await loginPage.navigation.gotoThisPage();
+  await loginPage.loginAsUser({ username: "alice", password: "s3cr3t" });
+  await loginPage.navigation.expectAnotherPage();
+});
+```
+
+---
+
+## Locator Accessor Reference
+
+<CardGroup cols={2}>
+  <Card title="getLocator" icon="crosshairs" href="/api/locator-registry">
+    Resolves only the **terminal** element of the path — no ancestor locators are chained. Use this when you want an isolated locator for a single element and do not need parent scoping.
+
+    ```ts
+    const spinner = loginPage.getLocator("common.spinner");
+    await expect(spinner).toHaveCount(0);
+    ```
+  </Card>
+  <Card title="getNestedLocator" icon="sitemap" href="/api/locator-registry">
+    Resolves the **fully chained** locator by traversing every ancestor segment in the path. Use this when the element must be scoped within its parent containers.
+
+    ```ts
+    const input = loginPage.getNestedLocator(
+      "main.form@login.input@username"
+    );
+    await input.fill("alice");
+    ```
+  </Card>
+  <Card title="getLocatorSchema" icon="sliders" href="/api/locator-registry">
+    Returns a mutable **query builder clone** for the path. Chain `.filter()`, `.nth()`, `.update()`, or `.replace()` before calling `.getLocator()` or `.getNestedLocator()`. The stored registry schema is never modified.
+
+    ```ts
+    const filtered = loginPage
+      .getLocatorSchema("main.form@login")
+      .filter("main.form@login", { hasText: /Sign in/ })
+      .getNestedLocator();
+    ```
+  </Card>
+  <Card title="add" icon="plus" href="/api/locator-registry">
+    Registers a locator path in `defineLocators()`. Returns a fluent registration builder. Each path may be registered exactly once. See the Locator Registry reference for full builder API.
+
+    ```ts
+    this.add("main.button@login")
+      .getByRole("button", { name: "Login" });
+    ```
+  </Card>
+</CardGroup>
+
+---
+
+## Session Storage
+
+`PageObject` constructs a `SessionStorage` instance pre-labeled with `label`. The label appears in Playwright report step titles, making it easy to trace which page triggered a storage operation.
+
+```ts
+// Write values and reload the page
+await loginPage.sessionStorage.set({ token: "abc123" }, { reload: true });
+
+// Inject values before the next navigation (no reload needed)
+await loginPage.sessionStorage.setOnNextNavigation({ theme: "dark" });
+
+// Read values; wait for storage context to be available
+const data = await loginPage.sessionStorage.get(
+  ["token", "theme"],
+  { waitForContext: true }
+);
+
+// Clear specific keys
+await loginPage.sessionStorage.clear(["token"], { waitForContext: true });
+```
+
+<Tip>
+  See the [Session Storage](/api/session-storage) reference for the full `SessionStorage` API, including `get`, `set`, `setOnNextNavigation`, and `clear`.
+</Tip>

@@ -1,0 +1,356 @@
+---
+title: "Locator Registry: Registration and Resolution in POMWright"
+sidebarTitle: "Locator Registry"
+description: "Understand the POMWright locator registry mental model, all 10 strategy methods, post-definition steps, and how getLocator vs getNestedLocator resolve locator chains."
+---
+
+The locator registry is the core of POMWright's Page Object Model. Rather than scattering raw Playwright locator calls across your test helpers, you declare each element once at a typed path, and the registry resolves it consistently everywhere it is needed. Every locator is defined exactly once, validated at the path level both at compile time and at runtime, and resolved on demand — either as a standalone terminal locator or as a fully chained nested locator traversing every ancestor in the path.
+
+## Mental model
+
+Think of the registry as three parallel maps, all keyed by the same dot-delimited path string:
+
+1. **path → locator strategy definition** — which Playwright method and arguments to use (`getByRole`, `locator`, `frameLocator`, etc.).
+2. **path → ordered steps** — a sequence of `filter(...)` and `nth(...)` calls to apply after the locator is created.
+3. **path → optional description** — an explicit label surfaced in Playwright's locator description.
+
+When you call `getLocator("main.form@login.input@username")` the registry looks up only that one terminal entry and resolves it. When you call `getNestedLocator("main.form@login.input@username")` it expands the path into the chain `["main", "main.form@login", "main.form@login.input@username"]`, resolves each registered segment in order, and chains each result onto the previous one — so the final locator is scoped within its DOM ancestors.
+
+```
+getLocator("main.form@login.input@username")
+  └─ getByLabel("Username")                        ← terminal only
+
+getNestedLocator("main.form@login.input@username")
+  └─ locator("main")
+       └─ getByRole("form", { name: "Login" })
+            └─ getByLabel("Username")              ← fully chained
+```
+
+## Creating a standalone registry
+
+Inside `PageObject` the registry is created automatically and exposed through `this.add`, `this.getLocator`, etc. You can also create a registry directly with `createRegistryWithAccessors`:
+
+```ts
+import { createRegistryWithAccessors } from "pomwright";
+
+type Paths = "main" | "main.button";
+
+const { registry, add, getLocator, getNestedLocator, getLocatorSchema } =
+  createRegistryWithAccessors<Paths>(page);
+
+add("main").locator("main");
+add("main.button").getByRole("button", { name: "Save" });
+
+await getNestedLocator("main.button").click();
+```
+
+The returned `add`, `getLocator`, `getNestedLocator`, and `getLocatorSchema` are pre-bound to the registry instance, so they can be passed around without losing their `this` context.
+
+### Exported accessor types
+
+When building custom classes or fixtures that accept these helpers by injection, import the accessor types:
+
+```ts
+import type {
+  AddAccessor,
+  GetLocatorAccessor,
+  GetNestedLocatorAccessor,
+  GetLocatorSchemaAccessor,
+  LocatorRegistry,
+} from "pomwright";
+```
+
+The public `LocatorRegistry<Paths>` type exposes only `add`, `createReusable`, `getLocator`, `getNestedLocator`, and `getLocatorSchema`. Internal lifecycle methods (`register`, `replace`, `get`, `unregister`) are not part of the public contract.
+
+## Registering locators with `add()`
+
+Call `add(path)` to begin a registration chain. Follow it with exactly one strategy method, then optionally chain `filter()`, `nth()`, and `describe()`.
+
+```ts
+registry.add("main").locator("main");
+registry.add("main.form@login").getByRole("form", { name: "Login" });
+registry.add("main.form@login.input@username").getByLabel("Username");
+registry.add("main.form@login.input@password").getByLabel("Password");
+registry.add("main.button@login").getByRole("button", { name: "Login" });
+registry.add("main.list.item")
+  .getByRole("listitem", { name: /Row/ })
+  .filter({ hasText: "Row" })
+  .nth("last")
+  .describe("Last matching row");
+```
+
+### All 10 strategy methods
+
+<Tabs>
+  <Tab title="Role, Text, Label">
+    ```ts
+    // getByRole — matches by ARIA role and optional accessible name / state
+    registry.add("nav.home").getByRole("link", { name: "Home" });
+
+    // getByText — matches by visible text content
+    registry.add("alert.error").getByText(/failed/i);
+
+    // getByLabel — matches by associated label text
+    registry.add("form.email").getByLabel("Email", { exact: true });
+    ```
+  </Tab>
+  <Tab title="Placeholder, AltText, Title">
+    ```ts
+    // getByPlaceholder — matches by input placeholder text
+    registry.add("form.search").getByPlaceholder("Search", { exact: true });
+
+    // getByAltText — matches by image alt attribute
+    registry.add("image.logo").getByAltText(/brand/);
+
+    // getByTitle — matches by title attribute
+    registry.add("icon.info").getByTitle("Info");
+    ```
+  </Tab>
+  <Tab title="locator, frameLocator">
+    ```ts
+    // locator — matches by CSS selector or XPath
+    registry.add("list.items").locator("ul > li");
+
+    // frameLocator — enters an iframe context for descendant locators
+    registry.add("shell.frame@login").frameLocator("iframe#login");
+    registry.add("shell.frame@login.username").getByLabel("Username");
+    ```
+  </Tab>
+  <Tab title="getByTestId, getById">
+    ```ts
+    // getByTestId — matches by data-testid attribute (or custom testIdAttribute)
+    registry.add("card.title").getByTestId("card-title");
+
+    // getById — matches by id attribute; normalizes "#id" and "id=id" prefixes
+    registry.add("modal.close").getById("close-modal");     // → locator('#close-modal')
+    registry.add("modal.close2").getById("#close-modal");   // same result, # is stripped
+    registry.add("modal.dynamic").getById(/modal-/);        // → locator('[id*="modal-"]')
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Each registration accepts **exactly one** strategy. Calling a second strategy on the same `add()` chain throws at runtime, and TypeScript enforces this through the builder's type narrowing.
+</Note>
+
+### Post-definition chain methods
+
+After a strategy is set, three additional methods are available on the chain:
+
+<Tabs>
+  <Tab title="filter()">
+    Records a Playwright `.filter(...)` operation. Multiple filters are applied in call order and each narrows the matched set. The `has` and `hasNot` options accept a Playwright `Locator` instance **or** a registry path string (resolved as a terminal locator at query time).
+
+    ```ts
+    registry.add("main").locator("main");
+    registry.add("main.section").locator("section");
+    registry.add("main.section.heading").getByRole("heading", { level: 2 });
+
+    registry
+      .add("main.section.warning")
+      .locator(".warning")
+      .filter({ has: "main.section.heading" })
+      .filter({ hasNot: "main.section" })
+      .filter({ hasText: /Warning/i });
+    ```
+  </Tab>
+  <Tab title="nth()">
+    Records an index selector applied after all filters. Accepts a `number`, `"first"`, or `"last"`.
+
+    ```ts
+    registry.add("table.rows").locator("tr").nth(0);
+    registry.add("results.last").locator(".result").nth("last");
+    ```
+  </Tab>
+  <Tab title="describe()">
+    Stores an explicit description that overrides the path default on the resolved terminal locator. Useful for communicating intent in Playwright's locator description.
+
+    ```ts
+    registry
+      .add("main.submit")
+      .getByRole("button", { name: "Submit" })
+      .describe("Primary submit button");
+
+    registry.getLocator("main.submit").description();
+    // "Primary submit button"
+    ```
+  </Tab>
+</Tabs>
+
+### Duplicate path behavior
+
+A path can only be registered once. Registering the same path again throws with a full diff of the existing versus attempted schema:
+
+```
+A locator schema with the path "main.button" already exists.
+Existing Schema: { ... }
+```
+
+## Resolution APIs
+
+### `getLocator(path)` — terminal only
+
+`getLocator` applies only the terminal path's definition and recorded steps. No ancestor chaining occurs. Use it when you want a direct reference to a specific element without relying on DOM nesting for scope.
+
+```ts
+registry.add("main.form.username").getByLabel("Username");
+
+const terminal = registry.getLocator("main.form.username");
+// Equivalent to: page.getByLabel("Username")
+// terminal.description() === "main.form.username"
+```
+
+### `getNestedLocator(path)` — full chain
+
+`getNestedLocator` expands the path into its ancestor segments (`"main"`, `"main.form"`, `"main.form.username"`), resolves each registered segment in order, and scopes each result within the previous. Use this whenever DOM containment is the right scoping strategy.
+
+```ts
+registry.add("main").locator("main");
+registry.add("main.form").getByRole("form", { name: "Login" });
+registry.add("main.form.username").getByLabel("Username");
+
+const nested = registry.getNestedLocator("main.form.username");
+// locator("main").getByRole("form", { name: "Login" }).getByLabel("Username")
+// nested.description() === "main.form.username"
+```
+
+### Frame locator behavior
+
+When a segment is registered with `frameLocator`, its behavior in a chain depends on whether it is the terminal path or not:
+
+```ts
+registry.add("shell.frame@login").frameLocator("iframe#login");
+registry.add("shell.frame@login.username").getByLabel("Username");
+
+// Terminal frame — resolves to the iframe owner locator (the <iframe> element itself)
+const frameOwner = registry.getNestedLocator("shell.frame@login");
+
+// Non-terminal frame — enters the frame context for descendants
+const insideFrame = registry.getNestedLocator("shell.frame@login.username");
+// iframe context: frameLocator("iframe#login").getByLabel("Username")
+```
+
+<Warning>
+  Frame locator definitions cannot be used as `has` / `hasNot` filter references. If you need to target a frame in a filter, pass `page.frameLocator(...).owner()` or a resolved locator from `getNestedLocator(path)` instead.
+</Warning>
+
+### Sparse chain behavior
+
+During nested resolution, chain segments that have no registered definition are silently skipped. Only the terminal path must have a registered definition — resolving a terminal that was never registered throws. This means you can register just the leaf node and it will resolve as a standalone locator even when called through `getNestedLocator`:
+
+```ts
+// Only the leaf is registered — ancestors are skipped
+registry.add("main.form.username").getByLabel("Username");
+
+// Resolves without error; behaves like getLocator() here
+const locator = registry.getNestedLocator("main.form.username");
+```
+
+<Tip>
+  Sparse chains are supported for flexibility, but registering explicit ancestors improves readability, makes your page structure self-documenting, and gives `getNestedLocator` the full scoping benefit.
+</Tip>
+
+## Query builder — `getLocatorSchema(path)`
+
+`getLocatorSchema(path)` returns a **mutable clone** of the locator chain rooted at the given path. All mutations on the clone leave the stored registry untouched, so you can safely call `getLocatorSchema` multiple times and get a fresh clone each time.
+
+```ts
+const builder = registry
+  .getLocatorSchema("main.form.button")
+  .filter("main.form", { hasText: "Login" })
+  .nth("main.form.button", "first");
+
+const locator = builder.getNestedLocator();
+```
+
+### Sub-path scoping
+
+Builder methods that accept an optional `subPath` apply their mutation to a specific ancestor segment rather than the terminal. Valid sub-paths are those that exist in the resolved chain of the root path.
+
+```ts
+// Targets the "main.form" ancestor, not the terminal "main.form.button"
+const locator = registry
+  .getLocatorSchema("main.form.button")
+  .filter("main.form", { hasText: "Login" })
+  .getNestedLocator();
+```
+
+When `subPath` is omitted, the terminal path is used by default.
+
+### Available builder methods
+
+| Method | Optional `subPath`? | Description |
+|---|---|---|
+| `filter(subPath?, filterDef)` | Yes | Appends a filter step to the target segment |
+| `nth(subPath?, index)` | Yes | Appends an index selector to the target segment |
+| `clearSteps(subPath?)` | Yes | Removes all recorded steps for the target segment |
+| `describe(description)` | N/A | Sets a description on the terminal locator |
+| `update(subPath?)` | Yes | Returns a PATCH-style update builder |
+| `replace(subPath?)` | Yes | Returns a POST-style replace builder |
+| `remove(subPath?)` | Yes | Soft-deletes a segment from the clone |
+| `getLocator()` | — | Resolves the terminal locator only |
+| `getNestedLocator()` | — | Resolves the full chained locator |
+
+### `update` vs `replace`
+
+`update` applies a PATCH-style merge onto the existing definition — unspecified fields are preserved from the current definition:
+
+```ts
+const updated = registry
+  .getLocatorSchema("main.button")
+  .update()
+  .getByRole({ name: "Sign in" })
+  .getNestedLocator();
+// original role is preserved; only `name` option is patched
+```
+
+`replace` applies a POST-style overwrite — all required fields for the new strategy must be provided:
+
+```ts
+const replaced = registry
+  .getLocatorSchema("main.button")
+  .replace()
+  .locator("button.primary", { hasText: "Sign in" })
+  .getNestedLocator();
+```
+
+### `remove` and rehydration
+
+`remove(subPath?)` soft-deletes a segment for the builder only. Resolving a chain where the terminal was removed throws. A removed segment can be re-registered within the same builder chain using `update` or `replace`:
+
+```ts
+const locator = registry
+  .getLocatorSchema("main.form.username")
+  .remove()
+  .replace()
+  .getByLabel("Email")
+  .getNestedLocator();
+```
+
+## Reusable locators
+
+`registry.createReusable` lets you define a strategy and steps without immediately registering them. The resulting seed can then be passed to multiple `add(path, { reuse: seed })` calls, each optionally patching the seeded strategy with a single matching override.
+
+```ts
+const h2 = registry.createReusable
+  .getByRole("heading", { level: 2 })
+  .filter({ hasText: /Summary/ });
+
+registry.add("card.title", { reuse: h2 });
+registry.add("card.title@first", { reuse: h2 }).nth(0);
+```
+
+You can also reuse an already-registered path directly, which clones its definition, steps, and explicit description under the new path:
+
+```ts
+registry.add("errors.invalidPassword").getByText("Invalid password");
+
+// Registers the same definition at a different path for different DOM scoping
+registry.add("main.form@login.error@invalidPassword", { reuse: "errors.invalidPassword" });
+registry.add("main.region@profile.form@changePassword.error@invalidPassword",
+  { reuse: "errors.invalidPassword" });
+```
+
+<Note>
+  Path-based reuse (`{ reuse: "some.path" }`) registers immediately and returns `void` — the chain ends there. Object-seed reuse (`{ reuse: seedObject }`) optionally returns a builder for a single matching-strategy override.
+</Note>

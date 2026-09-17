@@ -1,0 +1,272 @@
+---
+title: "Composing Locator Modules Across Multiple Files"
+sidebarTitle: "Locator Modules"
+description: "Split locator definitions across files using the overload signature pattern, compose parent/child modules, and share slot paths across PageObjects."
+---
+
+As a project grows, keeping every locator definition in a single file alongside its `PageObject` class becomes harder to maintain. POMWright supports splitting locator definitions across as many `*.locators.ts` files as you need, then composing them into a single typed registry. This page covers the single-file approach, the recommended overload signature pattern for composable modules, parent/child module composition, and how to handle shared slot paths.
+
+## Single-file approach
+
+When all locator definitions live in one file, the setup is straightforward. Export the `Paths` union and a `defineLocators` function, then call it from your `PageObject`:
+
+```ts
+// login.locators.ts
+import type { LocatorRegistry } from "pomwright";
+
+export type Paths =
+  | "main"
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  registry.add("main").locator("main");
+  registry.add("main.form@login").getByRole("form", { name: "Login" });
+  registry.add("main.form@login.input@username").getByLabel("Username");
+  registry.add("main.form@login.input@password").getByLabel("Password");
+  registry.add("main.button@login").getByRole("button", { name: "Login" });
+}
+```
+
+```ts
+// login.page.ts
+import { type Page } from "@playwright/test";
+import { PageObject } from "pomwright";
+import { defineLocators, type Paths } from "./login.locators";
+
+export class LoginPage extends PageObject<Paths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login");
+  }
+
+  protected defineLocators(): void {
+    defineLocators(this.locatorRegistry);
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [];
+  }
+}
+```
+
+This works well for pages with a small number of locators. Once the list grows, or when multiple pages share UI regions, splitting into composable modules is the better approach.
+
+## The overload signature pattern
+
+When a locator module may be passed to a registry that already contains paths from other modules, the function signature needs to accommodate a larger union. The recommended pattern uses a public overload and a narrow implementation:
+
+```ts
+// header.locators.ts
+import type { LocatorRegistry } from "pomwright";
+
+export type Paths =
+  | "header"
+  | "header.link@logo"
+  | "header.link@help";
+
+export function defineLocators<ExternalPaths extends string = never>(
+  registry: LocatorRegistry<Paths | ExternalPaths>,
+): void;
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  registry.add("header").getByRole("banner");
+  registry.add("header.link@logo").getByRole("link", { name: "Logo" });
+  registry.add("header.link@help").getByRole("link", { name: "Help" });
+}
+```
+
+There is only one runtime function. The first signature is the **public overload** — it tells TypeScript that callers may pass a registry typed for a larger union. The second signature is the **implementation** — it narrows the registry back to this module's local `Paths`, keeping `registry.add(...)` autocomplete precise.
+
+<Note>
+  `ExternalPaths extends string = never` means the generic defaults to `never`,
+  so callers that pass only this module's own registry still type-check correctly.
+</Note>
+
+## Composing parent and child modules
+
+A parent module imports child `Paths` types and child `defineLocators` functions, then exposes its own composed union:
+
+```ts
+// common.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addHeader, type Paths as Header } from "./header.locators";
+import { defineLocators as addFooter, type Paths as Footer } from "./footer.locators";
+
+export type Paths = Header | Footer | "main";
+
+export function defineLocators<ExternalPaths extends string = never>(
+  registry: LocatorRegistry<Paths | ExternalPaths>,
+): void;
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addHeader(registry);
+  addFooter(registry);
+  registry.add("main").locator("main");
+}
+```
+
+A page-level module then composes `common.locators.ts` and adds its own paths:
+
+```ts
+// login.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addCommon, type Paths as Common } from "../common.locators";
+
+export type Paths =
+  | Common
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addCommon(registry);
+  registry.add("main.form@login").getByRole("form", { name: "Login" });
+  registry.add("main.form@login.input@username").getByLabel("Username");
+  registry.add("main.form@login.input@password").getByLabel("Password");
+  registry.add("main.button@login").getByRole("button", { name: "Login" });
+}
+```
+
+<Note>
+  Page-level locator files sit at the top of their composition hierarchy, so
+  they do not need the overload signature unless they will themselves be
+  composed into an even larger module (for example, a group of related
+  sub-pages).
+</Note>
+
+The `PageObject` then consumes the final composed type:
+
+```ts
+// login.page.ts
+import { type Page } from "@playwright/test";
+import { PageObject } from "pomwright";
+import { defineLocators, type Paths } from "./login.locators";
+
+export class LoginPage extends PageObject<Paths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login");
+  }
+
+  protected defineLocators(): void {
+    defineLocators(this.locatorRegistry);
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [
+      async () => {
+        await this.getNestedLocator("main.form@login").waitFor({ state: "visible" });
+      },
+    ];
+  }
+}
+```
+
+## How the generic works
+
+The overload signature:
+
+```ts
+export function defineLocators<ExternalPaths extends string = never>(
+  registry: LocatorRegistry<Paths | ExternalPaths>,
+): void;
+```
+
+- `Paths` — the union owned or registered by this locator module.
+- `ExternalPaths` — any other paths already present in the registry at the call site.
+
+When `common.locators.ts` passes its registry down to `addHeader(registry)`, TypeScript infers `ExternalPaths` as `Footer | "main"` — the paths that exist in the common registry but are not part of the header module. The header module's implementation body still only sees its local `Paths`, preserving autocomplete accuracy.
+
+## Shared slot paths
+
+Sometimes a path name applies to every page in a domain, but the concrete locator differs per page — for example, a page heading. Declare the path in the common parent without registering a locator for it (a *slot*), then have each top-level module fill the slot with its own definition.
+
+### Declaring the slot in the common module
+
+```ts
+// common.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addHeader, type Paths as Header } from "./header.locators";
+import { defineLocators as addFooter, type Paths as Footer } from "./footer.locators";
+
+export type Paths = Header | Footer | "main" | "main.heading";
+
+export function defineLocators<ExternalPaths extends string = never>(
+  registry: LocatorRegistry<Paths | ExternalPaths>,
+): void;
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addHeader(registry);
+  addFooter(registry);
+  registry.add("main").locator("main");
+  // "main.heading" is intentionally not registered here.
+}
+```
+
+### Filling the slot in each page-level module
+
+```ts
+// login.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addCommon, type Paths as Common } from "../common.locators";
+
+export type Paths =
+  | Common
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addCommon(registry);
+  registry.add("main.heading").getByRole("heading", { name: "Login" });
+  registry.add("main.form@login").getByRole("form", { name: "Login" });
+  registry.add("main.form@login.input@username").getByLabel("Username");
+  registry.add("main.form@login.input@password").getByLabel("Password");
+  registry.add("main.button@login").getByRole("button", { name: "Login" });
+}
+```
+
+A different page fills the same slot differently in its own registry:
+
+```ts
+// accessories.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addCommon, type Paths as Common } from "../common.locators";
+
+export type Paths = Common | "main.list@accessories";
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addCommon(registry);
+  registry.add("main.heading").getByRole("heading", { name: "Accessories" });
+  registry.add("main.list@accessories").getByRole("list", { name: "Accessories" });
+}
+```
+
+<Warning>
+  If you forget to register a slot path in a top-level module, POMWright will
+  throw a descriptive error at runtime. Each `PageObject` creates a separate
+  registry instance, so two top-level modules can both register `"main.heading"`
+  without conflicting.
+</Warning>
+
+## Ownership rule
+
+Each path must be registered exactly once per registry instance. The `Paths` union describes which paths are *permitted* in a registry — registration still happens only where `registry.add(...)` is called.
+
+If multiple modules call `registry.add(...)` for the same path on the same registry instance, POMWright throws a duplicate registration error at runtime. Keeping each path owned by a single module, and using slot declarations for shared paths, prevents this.
+
+## Checklist
+
+<AccordionGroup>
+  <Accordion title="For every locator module">
+    - Export a `Paths` union for all paths the module owns, registers, or declares as slots.
+    - Use the overload signature with `ExternalPaths` for any module that may be composed into a larger registry.
+    - Keep the implementation signature typed to the local `Paths` for focused autocomplete.
+    - Declare domain-wide shared slots in the nearest common parent module.
+    - Register each shared slot in exactly one top-level module per registry instance.
+    - Let parent modules compose child `Paths` unions and call child `defineLocators` functions.
+  </Accordion>
+</AccordionGroup>

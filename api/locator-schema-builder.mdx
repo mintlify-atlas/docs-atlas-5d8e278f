@@ -1,0 +1,458 @@
+---
+title: "Locator Schema Builder API Reference for POMWright"
+sidebarTitle: "Schema Builder"
+description: "Reference for the getLocatorSchema query builder: filter, nth, clearSteps, describe, update vs replace semantics, remove tombstones, and rehydration."
+---
+
+The schema builder is the mutable query object returned by `registry.getLocatorSchema(path)` (and
+`this.getLocatorSchema(path)` inside a `PageObject`). It lets you apply per-call overrides — additional filters,
+index selectors, definition patches, or soft-deletes — against a **clone** of the registered chain, leaving the
+registry unchanged. Call `getLocator()` or `getNestedLocator()` to resolve the final Playwright `Locator`.
+
+---
+
+## Clone semantics
+
+When `getLocatorSchema(path)` is called, POMWright copies every definition and step set for all chain segments
+up to and including `path`. Subsequent mutations on the returned builder touch only that copy:
+
+```ts
+// Registry has: "main" → locator("main"), "main.form" → role("form"), "main.form.button" → role("button")
+const builder = registry.getLocatorSchema("main.form.button");
+
+builder.filter({ hasText: /Save/ });          // appended to the clone only
+builder.nth(0);                               // appended to the clone only
+
+// The registry's stored steps for "main.form.button" are unchanged.
+const locator = builder.getNestedLocator();
+```
+
+<Note>
+  Builders are **not** re-entrant. After calling `getLocator()` or
+  `getNestedLocator()`, the builder can still be reused (additional mutations are
+  applied on top of the existing state), but the resolved `Locator` snapshot is
+  already computed and immutable.
+</Note>
+
+---
+
+## Sub-path scope
+
+Every mutation method accepts an optional `subPath`. A valid `subPath` is any chain segment that exists in the
+builder's clone — meaning its path prefix is contained within the terminal path passed to `getLocatorSchema`.
+
+For a builder rooted at `"a.b.c"`, valid sub-paths are `"a"`, `"a.b"`, and `"a.b.c"` — provided each
+segment was registered. If a sub-path is not valid for the builder, the method throws:
+
+```
+"<subPath>" is not a valid sub-path of "<rootPath>".
+```
+
+**Default sub-path behavior table**
+
+When `subPath` is omitted, every method defaults to the terminal path passed to `getLocatorSchema`.
+
+| Method | `subPath` optional? | Default when omitted |
+|---|---|---|
+| `filter(subPath?, filter)` | Yes | Terminal path |
+| `nth(subPath?, index)` | Yes | Terminal path |
+| `clearSteps(subPath?)` | Yes | Terminal path |
+| `update(subPath?)` | Yes | Terminal path |
+| `replace(subPath?)` | Yes | Terminal path |
+| `remove(subPath?)` | Yes | Terminal path |
+| `describe(description)` | N/A — always terminal | Terminal path |
+
+---
+
+## `filter(subPath?, filter)` — append a filter step
+
+Appends a Playwright-style filter step to the specified sub-path's step list.
+
+<Tabs>
+  <Tab title="Terminal (no subPath)">
+    ```ts
+    const locator = registry
+      .getLocatorSchema("list.item")
+      .filter({ hasText: /Row/ })
+      .getNestedLocator();
+    ```
+  </Tab>
+  <Tab title="Ancestor sub-path">
+    ```ts
+    const locator = registry
+      .getLocatorSchema("list.item")
+      .filter("list", { hasText: "My List" })
+      .filter("list.item", { hasText: /Row/ })
+      .getNestedLocator();
+    ```
+  </Tab>
+</Tabs>
+
+<ParamField path="subPath" type="string">
+  Optional. A registered chain segment path. Defaults to the terminal path.
+</ParamField>
+<ParamField path="filter" type="FilterDefinition" required>
+  A Playwright filter object. `has` and `hasNot` accept either a Playwright
+  `Locator` instance or a registry path string. When a path string is passed,
+  the registry resolves it as a terminal-only locator (no ancestor chaining).
+</ParamField>
+
+**Returns** `this` for chaining.
+
+---
+
+## `nth(subPath?, index)` — append an index step
+
+Appends an index selector to the specified sub-path's step list. Multiple `nth` calls on the same sub-path
+stack in call order.
+
+<Tabs>
+  <Tab title="Terminal (no subPath)">
+    ```ts
+    registry
+      .getLocatorSchema("table.row")
+      .nth(0)
+      .getNestedLocator();
+    ```
+  </Tab>
+  <Tab title="Ancestor sub-path">
+    ```ts
+    registry
+      .getLocatorSchema("list.item")
+      .nth("list.item", 2)
+      .getNestedLocator();
+    ```
+  </Tab>
+</Tabs>
+
+<ParamField path="subPath" type="string">
+  Optional. Defaults to the terminal path.
+</ParamField>
+<ParamField path="index" type="number | 'first' | 'last'" required>
+  Numeric index, `"first"`, or `"last"`.
+</ParamField>
+
+**Returns** `this` for chaining.
+
+---
+
+## `clearSteps(subPath?)` — remove all steps
+
+Clears every `filter` and `nth` step recorded for the specified sub-path in the builder clone, leaving
+the locator definition intact.
+
+```ts
+// Remove all steps (e.g. nth/filter) set during registration
+const locator = registry
+  .getLocatorSchema("list.item")
+  .clearSteps("list.item")
+  .getNestedLocator();
+```
+
+<ParamField path="subPath" type="string">
+  Optional. Defaults to the terminal path.
+</ParamField>
+
+**Returns** `this` for chaining.
+
+---
+
+## `describe(description)` — override the terminal description
+
+Sets or overrides the Playwright locator description applied to the terminal locator when resolving. This
+affects only the current builder and does not mutate the stored registry description.
+
+```ts
+const locator = registry
+  .getLocatorSchema("section.button")
+  .describe("Save button for section form")
+  .getNestedLocator();
+
+locator.description(); // → "Save button for section form"
+```
+
+<ParamField path="description" type="string" required>
+  The description string to apply to the resolved terminal locator via
+  Playwright's `locator.describe(description)`.
+</ParamField>
+
+**Returns** `this` for chaining.
+
+---
+
+## `update(subPath?)` — PATCH-style definition merge
+
+`update()` returns a `LocatorUpdateBuilder` scoped to the specified sub-path. The update builder exposes the
+same ten strategy methods as `registry.add`, but all arguments are **optional** — any field you provide is merged
+into the existing definition; omitted fields are inherited from the current or baseline definition.
+
+```ts
+// Patch only the "name" option — "role" is inherited from the registration
+const locator = registry
+  .getLocatorSchema("form.button")
+  .update()
+  .getByRole({ name: "Sign in" })
+  .getNestedLocator();
+```
+
+```ts
+// Switch strategy type — all required fields must be resolvable
+const locator = registry
+  .getLocatorSchema("form.input")
+  .update("form.input")
+  .getByLabel({ exact: true })
+  .getNestedLocator();
+```
+
+<ParamField path="subPath" type="string">
+  Optional. Defaults to the terminal path.
+</ParamField>
+
+**Returns** `LocatorUpdateBuilder` — call a strategy method on it; the builder returns the parent
+`LocatorQueryBuilderPublic` so you can continue chaining.
+
+### Update strategy methods (PATCH mode)
+
+All arguments are optional. The field resolution order is: **provided value → current definition → per-type
+cache → baseline registration**.
+
+| Strategy method | Optional primary arg | Optional options arg |
+|---|---|---|
+| `getByRole(role?, options?)` | `role` | `options` |
+| `getByText(text?, options?)` | `text` | `options` |
+| `getByLabel(text?, options?)` | `text` | `options` |
+| `getByPlaceholder(text?, options?)` | `text` | `options` |
+| `getByAltText(text?, options?)` | `text` | `options` |
+| `getByTitle(text?, options?)` | `text` | `options` |
+| `locator(selector?, options?)` | `selector` | `options` |
+| `frameLocator(selector?)` | `selector` | — |
+| `getByTestId(testId?)` | `testId` | — |
+| `getById(id?)` | `id` | — |
+
+<Note>
+  If a required field (for example `role` for `getByRole`) cannot be resolved
+  from any source, the update throws:
+  `Locator update for "..." of type "role" requires a "role" value.`
+</Note>
+
+---
+
+## `replace(subPath?)` — POST-style definition overwrite
+
+`replace()` returns a `LocatorUpdateBuilder` in **replace mode**. Unlike `update`, replace treats the call as a
+full POST — required fields must be explicitly supplied; nothing is inherited from the existing definition.
+
+```ts
+const locator = registry
+  .getLocatorSchema("section.button")
+  .replace("section.button")
+  .getByRole("button", { name: "Save" })
+  .getNestedLocator();
+```
+
+```ts
+// Replace an ancestor segment while keeping the terminal unchanged
+const locator = registry
+  .getLocatorSchema("main.form.submit")
+  .replace("main.form")
+  .locator("form.login-form")
+  .getNestedLocator();
+```
+
+<ParamField path="subPath" type="string">
+  Optional. Defaults to the terminal path.
+</ParamField>
+
+**Returns** `LocatorUpdateBuilder` in replace mode.
+
+### Replace strategy methods (POST mode)
+
+Required primary arguments must be supplied explicitly. `options` remains optional for all strategies.
+
+| Strategy method | Required primary arg | Optional options arg |
+|---|---|---|
+| `getByRole(role, options?)` | `role` ✓ | `options` |
+| `getByText(text, options?)` | `text` ✓ | `options` |
+| `getByLabel(text, options?)` | `text` ✓ | `options` |
+| `getByPlaceholder(text, options?)` | `text` ✓ | `options` |
+| `getByAltText(text, options?)` | `text` ✓ | `options` |
+| `getByTitle(text, options?)` | `text` ✓ | `options` |
+| `locator(selector, options?)` | `selector` ✓ | `options` |
+| `frameLocator(selector)` | `selector` ✓ | — |
+| `getByTestId(testId)` | `testId` ✓ | — |
+| `getById(id)` | `id` ✓ | — |
+
+### `update` vs `replace` at a glance
+
+<CodeGroup>
+  ```ts update — PATCH
+  // Original registration: getByRole("button", { name: "Save" })
+  registry
+    .getLocatorSchema("form.button")
+    .update()
+    .getByRole({ name: "Submit" }) // Only patches "name"; "button" role inherited
+    .getNestedLocator();
+  ```
+
+  ```ts replace — POST
+  // Full replacement; no inheritance
+  registry
+    .getLocatorSchema("form.button")
+    .replace()
+    .getByRole("button", { name: "Submit" }) // "button" role required
+    .getNestedLocator();
+  ```
+</CodeGroup>
+
+---
+
+## `remove(subPath?)` — soft-delete a segment
+
+`remove()` soft-deletes the definition and steps for the specified sub-path in the builder clone by adding a
+**tombstone**. The behavior at resolution time depends on whether the removed segment is terminal or non-terminal.
+
+<Tabs>
+  <Tab title="Non-terminal removal">
+    A removed non-terminal segment is silently skipped during `getNestedLocator` traversal.
+    The resulting locator chain omits that segment.
+
+    ```ts
+    registry.add("main").locator("main");
+    registry.add("main.section").locator("section");
+    registry.add("main.section.button").getByRole("button");
+
+    // Remove the intermediate "main.section" segment
+    const locator = registry
+      .getLocatorSchema("main.section.button")
+      .remove("main.section")
+      .getNestedLocator();
+    // Resolves as: page.locator("main").getByRole("button")
+    // "main.section" is skipped
+    ```
+  </Tab>
+  <Tab title="Terminal removal">
+    If the terminal segment is removed and never rehydrated, calling `getLocator()` or
+    `getNestedLocator()` throws:
+    `No locator schema registered for path "...".`
+
+    ```ts
+    const builder = registry.getLocatorSchema("main.form.username");
+    builder.remove(); // removes terminal "main.form.username"
+
+    // ❌ Throws: No locator schema registered for path "main.form.username".
+    builder.getNestedLocator();
+    ```
+  </Tab>
+</Tabs>
+
+<ParamField path="subPath" type="string">
+  Optional. Defaults to the terminal path.
+</ParamField>
+
+**Returns** `this` for chaining.
+
+### Rehydrating removed segments
+
+A tombstoned sub-path can be repopulated within the same builder chain using `update` or `replace`. After a
+successful update or replace the tombstone is cleared and the segment participates in resolution normally.
+
+```ts
+const locator = registry
+  .getLocatorSchema("main.form.username")
+  .remove()                          // tombstone terminal
+  .replace()                         // clear tombstone, install new definition
+  .getByLabel("Email")
+  .getNestedLocator();
+```
+
+```ts
+// Rehydrate an ancestor segment and keep the terminal
+const locator = registry
+  .getLocatorSchema("main.form.username")
+  .remove("main.form")              // tombstone ancestor
+  .replace("main.form")             // rehydrate ancestor
+  .locator("form.alternate-form")
+  .getNestedLocator();
+```
+
+---
+
+## `getLocator()` — terminal-only resolution
+
+Resolves only the terminal definition and its recorded steps. Ancestor chain segments are ignored.
+
+```ts
+const locator = registry
+  .getLocatorSchema("form.submit")
+  .filter({ hasText: "Submit" })
+  .getLocator();
+```
+
+Throws if the terminal path has been removed (tombstoned) and not rehydrated:
+`No locator schema registered for path "...".`
+
+**Returns** `Locator`
+
+---
+
+## `getNestedLocator()` — full chain resolution
+
+Traverses from the chain root to the terminal path, applying each registered segment's definition and accumulated
+steps in order. Tombstoned non-terminal segments are skipped; a tombstoned terminal throws.
+
+```ts
+const locator = registry
+  .getLocatorSchema("list.item")
+  .filter("list", { hasText: "My List" })
+  .filter("list.item", { hasText: /Row/ })
+  .nth("list.item", 0)
+  .getNestedLocator();
+```
+
+**Returns** `Locator`
+
+---
+
+## Complete example
+
+The following example shows `update`, `filter` with a sub-path, and `describe` used together on a single builder:
+
+```ts
+type Paths =
+  | "dashboard"
+  | "dashboard.table"
+  | "dashboard.table.row"
+  | "dashboard.table.row.action";
+
+const { registry, getLocatorSchema } = createRegistryWithAccessors<Paths>(page);
+
+registry.add("dashboard").locator(".dashboard");
+registry.add("dashboard.table").getByRole("table", { name: "Users" });
+registry.add("dashboard.table.row").getByRole("row");
+registry.add("dashboard.table.row.action").getByRole("button", { name: "Edit" });
+
+const editButton = getLocatorSchema("dashboard.table.row.action")
+  // Filter the ancestor row to match a specific user
+  .filter("dashboard.table.row", { hasText: "Alice" })
+  // Patch the "action" button name for this call only
+  .update("dashboard.table.row.action")
+  .getByRole({ name: "Edit Alice" })
+  // Add a describe for the resolved locator
+  .describe("Edit button for Alice's row")
+  .getNestedLocator();
+
+await editButton.click();
+```
+
+---
+
+## Error reference
+
+| Error message | Cause |
+|---|---|
+| `No locator schema registered for path "...".` | Terminal path was not registered, or was removed without rehydration. |
+| `"..." is not a valid sub-path of "...".` | Supplied `subPath` is outside the builder's chain context. |
+| `Locator update for "..." of type "..." requires a "..." value.` | PATCH update could not resolve a required field from any source. |
+| `Locator replace for "..." of type "..." requires a "..." value.` | POST replace was missing a required primary argument. |
+| `Unable to resolve nested locator for path "...".` | `getNestedLocator` resolved to `null` — typically a removed terminal. |
+| `Unable to resolve direct locator for path "...".` | `getLocator` found no locator for the terminal definition. |

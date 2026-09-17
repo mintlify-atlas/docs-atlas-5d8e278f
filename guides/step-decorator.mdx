@@ -1,0 +1,136 @@
+---
+title: "Wrapping Page Methods with the @step() Decorator"
+sidebarTitle: "Step Decorator"
+description: "Use POMWright's @step() decorator to wrap PageObject methods in test.step automatically, producing readable Playwright HTML report traces."
+---
+
+POMWright exports a `@step()` decorator that wraps any class method in Playwright's `test.step`. When no custom title is provided, the step title is generated automatically as `ClassName.methodName`, producing clear, consistent traces in the Playwright HTML report without any boilerplate. The decorator supports all the same arguments as `test.step` itself, and it works with both the Stage 3 decorator spec and TypeScript's legacy `experimentalDecorators`.
+
+## Basic usage
+
+Apply `@step()` above a method in your `PageObject` subclass (or any class):
+
+```ts
+import { type Page } from "@playwright/test";
+import { PageObject, step } from "pomwright";
+import { defineLocators, type Paths } from "./login.locators";
+
+export class LoginPage extends PageObject<Paths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login");
+  }
+
+  protected defineLocators(): void {
+    defineLocators(this.locatorRegistry);
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [];
+  }
+
+  @step()
+  async login(username: string, password: string) {
+    await this.getNestedLocator("main.form@login.input@username").fill(username);
+    await this.getNestedLocator("main.form@login.input@password").fill(password);
+    await this.getNestedLocator("main.button@login").click();
+  }
+}
+```
+
+When `login` is called during a test, the Playwright report shows a step titled `LoginPage.login`.
+
+## Auto-generated titles
+
+The default step title is derived at call time from the class constructor name and method name:
+
+```
+ClassName.methodName
+```
+
+For example:
+- `LoginPage.login`
+- `CheckoutPage.addToCart`
+- `NavigationBar.clickHomeLink`
+
+This means you get descriptive trace entries for free — no need to manually write `test.step("LoginPage.login", ...)` in every method.
+
+## Custom title
+
+Pass a string as the first argument to override the auto-generated title:
+
+```ts
+@step("Fill in login credentials and submit")
+async login(username: string, password: string) {
+  await this.getNestedLocator("main.form@login.input@username").fill(username);
+  await this.getNestedLocator("main.form@login.input@password").fill(password);
+  await this.getNestedLocator("main.button@login").click();
+}
+```
+
+The report will show `Fill in login credentials and submit` instead of `LoginPage.login`.
+
+## Passing options
+
+`@step()` accepts the same optional `StepOptions` as `test.step`. Pass options as the first argument (without a title), or as the second argument (after a title):
+
+```ts
+// Options only — auto-generated title, boxed step
+@step({ box: true })
+async login(username: string, password: string) {
+  // ...
+}
+
+// Title and options
+@step("Login flow", { box: true })
+async login(username: string, password: string) {
+  // ...
+}
+```
+
+<Note>
+  `box: true` marks the step as a "box" in the Playwright HTML report, which
+  collapses its inner steps and shows only the step boundary in traces. This is
+  useful for high-level action methods where inner details are noise.
+</Note>
+
+## All supported call forms
+
+```ts
+@step()                          // auto title: ClassName.methodName
+@step("custom title")            // custom title
+@step({ box: true })             // options only, auto title
+@step("custom title", { box: true }) // title + options
+```
+
+The decorator also supports being applied without parentheses (Stage 3 only):
+
+```ts
+@step
+async someMethod() { ... }
+```
+
+## Class-only restriction
+
+`@step()` can only be applied to class methods. Applying it to a standalone function will throw:
+
+```
+@step decorator can only be applied to methods.
+```
+
+```ts
+// ✅ Works — class method
+class MyPage extends PageObject<Paths> {
+  @step()
+  async doSomething() { ... }
+}
+
+// ❌ Throws — standalone function
+const doSomething = step()(async function doSomething() { ... });
+```
+
+<Tip>
+  Apply `@step()` consistently to every meaningful action method in your page
+  objects. When a test fails, the Playwright HTML report and trace viewer will
+  show a clean timeline of exactly which high-level actions ran — making it much
+  faster to identify where and why the test broke.
+</Tip>

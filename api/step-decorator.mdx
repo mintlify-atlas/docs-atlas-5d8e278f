@@ -1,0 +1,185 @@
+---
+title: "step() Decorator API Reference for POMWright Tests"
+sidebarTitle: "step()"
+description: "Full reference for the @step() decorator: wraps class methods in Playwright test.step with an auto-generated or custom title and optional step options."
+---
+
+The `step()` decorator wraps any class method in Playwright's `test.step`, making it appear as a named step in the HTML report and trace viewer. When no title is provided the decorator automatically derives the step name from the class and method names, giving you readable traces with zero boilerplate. It supports both the Stage 3 ECMAScript decorator proposal and the legacy TypeScript experimental decorator style.
+
+## Import
+
+```ts
+import { step } from "pomwright";
+```
+
+---
+
+## Signature
+
+```ts
+export function step(): StepDecoratorFactory;
+export function step(title: string): StepDecoratorFactory;
+export function step(options: StepOptions): StepDecoratorFactory;
+export function step(title: string, options: StepOptions): StepDecoratorFactory;
+```
+
+`step` can be used as a bare decorator (`@step`) or as a decorator factory (`@step(...)`) when you want to pass a title or options.
+
+<ParamField path="title" type="string">
+  A custom step title shown in the Playwright HTML report and trace viewer. When omitted, the title defaults to `ClassName.methodName`, derived at runtime from `this.constructor.name` and the decorated property key.
+</ParamField>
+
+<ParamField path="options" type="StepOptions">
+  Options forwarded directly to Playwright's `test.step`. Accepts the same object as the third argument of `test.step`.
+  <Expandable title="StepOptions properties">
+    <ParamField path="options.box" type="boolean">
+      When `true`, errors thrown inside the step are attributed to the step call site rather than the line inside the method. Useful for hiding implementation details from error messages.
+    </ParamField>
+    <ParamField path="options.timeout" type="number">
+      Maximum time in milliseconds for the step to complete before it times out.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Default title behaviour
+
+When no title is supplied, the decorator resolves the step name at call time:
+
+```text
+ClassName.methodName
+```
+
+The class name is read from `this.constructor.name`. If the class name is unavailable or is `"Object"`, the prefix falls back to `"Anonymous"`.
+
+```ts
+class LoginPage extends PageObject<...> {
+  @step()
+  async login(username: string, password: string) {
+    // Step title in report: "LoginPage.login"
+  }
+}
+```
+
+---
+
+## Usage examples
+
+<CodeGroup>
+
+```ts Bare decorator (auto title)
+import { step } from "pomwright";
+
+class CheckoutPage extends PageObject<...> {
+  @step()
+  async addItemToCart(productId: string) {
+    // Step title: "CheckoutPage.addItemToCart"
+    await this.getLocator("cart.addButton").click();
+  }
+}
+```
+
+```ts Custom title
+import { step } from "pomwright";
+
+class CheckoutPage extends PageObject<...> {
+  @step("Add item to shopping cart")
+  async addItemToCart(productId: string) {
+    // Step title: "Add item to shopping cart"
+    await this.getLocator("cart.addButton").click();
+  }
+}
+```
+
+```ts With options only
+import { step } from "pomwright";
+
+class CheckoutPage extends PageObject<...> {
+  @step({ box: true })
+  async addItemToCart(productId: string) {
+    // Step title: "CheckoutPage.addItemToCart" (auto)
+    // Errors attributed to the call site
+    await this.getLocator("cart.addButton").click();
+  }
+}
+```
+
+```ts Custom title with options
+import { step } from "pomwright";
+
+class CheckoutPage extends PageObject<...> {
+  @step("Add item to shopping cart", { timeout: 10000 })
+  async addItemToCart(productId: string) {
+    // Step title: "Add item to shopping cart"
+    // Times out after 10 seconds
+    await this.getLocator("cart.addButton").click();
+  }
+}
+```
+
+</CodeGroup>
+
+---
+
+## Decorator styles
+
+`step` supports both the modern Stage 3 decorator syntax and the legacy TypeScript experimental decorator syntax. The same import and usage pattern works for both — TypeScript picks the correct overload automatically based on the decorator position.
+
+<Tabs>
+  <Tab title="Stage 3 (modern)">
+    Requires `"experimentalDecorators": false` (or omitted) in `tsconfig.json`, targeting TypeScript 5+.
+
+    ```ts
+    class LoginPage extends PageObject<...> {
+      @step()
+      async fillCredentials(user: string, pass: string) {
+        await this.getLocator("form.username").fill(user);
+        await this.getLocator("form.password").fill(pass);
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Legacy experimental">
+    Requires `"experimentalDecorators": true` in `tsconfig.json`.
+
+    ```ts
+    class LoginPage extends PageObject<...> {
+      @step()
+      async fillCredentials(user: string, pass: string) {
+        await this.getLocator("form.username").fill(user);
+        await this.getLocator("form.password").fill(pass);
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `@step` can only be applied to **class methods**. Applying it to standalone functions, getters, setters, or class fields will throw:
+
+  ```text
+  @step decorator can only be applied to methods.
+  ```
+</Note>
+
+---
+
+## How it works
+
+Internally, `step` wraps the original method with a function that:
+
+1. Reads `this.constructor.name` at call time to resolve the class name.
+2. Calls `test.step(resolvedTitle, () => original.apply(this, args), options)`.
+3. Returns the result of `test.step`, preserving the original return type.
+
+Because the class name is resolved at runtime rather than at decoration time, the title is always correct even when a method is inherited by a subclass.
+
+```ts
+// Internal equivalent of what @step() produces:
+async addItemToCart(productId: string) {
+  return test.step("CheckoutPage.addItemToCart", () => {
+    // original method body
+  });
+}
+```

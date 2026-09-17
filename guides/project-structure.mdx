@@ -1,0 +1,263 @@
+---
+title: "Recommended Project Structure for POMWright"
+sidebarTitle: "Project Structure"
+description: "Practical folder layout, naming conventions, and guidance on when to split PageObjects into companion locator files for scalable POMWright projects."
+---
+
+There is no single correct way to lay out a POMWright project, but the conventions described here have proven effective across multiple production applications. The key goals are: page objects stay focused on behavior, locator definitions are centralized and easy to share, fixtures are co-located with the page objects they wire up, and tests can be found quickly by feature or route.
+
+## Recommended directory tree
+
+```text
+playwright/
+├── fixtures/
+│   ├── all.fixtures.ts          # Re-exports all fixture sets for tests to import
+│   └── app/
+│       └── app.fixtures.ts      # Fixture definitions for one app or domain
+├── page-object-models/
+│   └── app/
+│       ├── common/
+│       │   ├── common.locators.ts   # Shared locators: nav, footer, dialogs, etc.
+│       │   └── header.locators.ts   # Per-region shared locator module
+│       └── pages/
+│           ├── login/
+│           │   ├── login.locators.ts
+│           │   └── login.page.ts
+│           ├── dashboard/
+│           │   ├── dashboard.locators.ts
+│           │   └── dashboard.page.ts
+│           └── checkout/
+│               ├── checkout.locators.ts
+│               └── checkout.page.ts
+└── tests/
+    ├── auth/
+    │   └── login.spec.ts
+    ├── dashboard/
+    │   └── dashboard.spec.ts
+    └── e2e/
+        └── purchase-flow.spec.ts
+```
+
+This layout mirrors Playwright's own recommended structure while adding the `page-object-models/` layer that separates locator definitions from page behavior.
+
+## Naming conventions
+
+| Pattern | Purpose |
+|---------|---------|
+| `*.page.ts` | `PageObject` subclass — navigation, actions, assertions |
+| `*.locators.ts` | `defineLocators` function and `Paths` type for a page or region |
+| `*.fixtures.ts` | Playwright fixture extension that instantiates page objects |
+| `*.spec.ts` | Test files |
+
+Consistent naming makes grepping and IDE navigation predictable. When you see `login.page.ts` and `login.locators.ts` side by side, you immediately know one contains behavior and the other contains locator definitions.
+
+## Keeping PageObjects focused
+
+A `PageObject` class has two responsibilities: describe its URL and implement action methods. Locator registration can be inlined for small pages:
+
+```ts
+// login.page.ts (small page, locators inlined)
+import { type Page } from "@playwright/test";
+import { PageObject, step } from "pomwright";
+
+type Paths =
+  | "main"
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+
+export class LoginPage extends PageObject<Paths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login");
+  }
+
+  protected defineLocators(): void {
+    this.add("main").locator("main");
+    this.add("main.form@login").getByRole("form", { name: "Login" });
+    this.add("main.form@login.input@username").getByLabel("Username");
+    this.add("main.form@login.input@password").getByLabel("Password");
+    this.add("main.button@login").getByRole("button", { name: "Login" });
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [
+      async () => {
+        await this.getNestedLocator("main.form@login").waitFor({ state: "visible" });
+      },
+    ];
+  }
+
+  @step()
+  async login(username: string, password: string) {
+    await this.getNestedLocator("main.form@login.input@username").fill(username);
+    await this.getNestedLocator("main.form@login.input@password").fill(password);
+    await this.getNestedLocator("main.button@login").click();
+  }
+}
+```
+
+Once the `Paths` union grows beyond roughly 8–10 entries, or once you want to share locators with another page, move the definitions to a companion `*.locators.ts` file:
+
+```ts
+// login.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addCommon, type Paths as Common } from "../common/common.locators";
+
+export type Paths =
+  | Common
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addCommon(registry);
+  registry.add("main.form@login").getByRole("form", { name: "Login" });
+  registry.add("main.form@login.input@username").getByLabel("Username");
+  registry.add("main.form@login.input@password").getByLabel("Password");
+  registry.add("main.button@login").getByRole("button", { name: "Login" });
+}
+```
+
+```ts
+// login.page.ts (behavior only, locators delegated)
+import { type Page } from "@playwright/test";
+import { PageObject, step } from "pomwright";
+import { defineLocators, type Paths } from "./login.locators";
+
+export class LoginPage extends PageObject<Paths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login");
+  }
+
+  protected defineLocators(): void {
+    defineLocators(this.locatorRegistry);
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [
+      async () => {
+        await this.getNestedLocator("main.form@login").waitFor({ state: "visible" });
+      },
+    ];
+  }
+
+  @step()
+  async login(username: string, password: string) {
+    await this.getNestedLocator("main.form@login.input@username").fill(username);
+    await this.getNestedLocator("main.form@login.input@password").fill(password);
+    await this.getNestedLocator("main.button@login").click();
+  }
+}
+```
+
+## Shared locator modules
+
+Elements that appear on every page — navigation bars, footers, cookie banners, toast notifications — belong in a `common/` directory rather than duplicated across every page's locators file.
+
+```ts
+// common/common.locators.ts
+import type { LocatorRegistry } from "pomwright";
+import { defineLocators as addHeader, type Paths as Header } from "./header.locators";
+
+export type Paths = Header | "main" | "main.heading";
+
+export function defineLocators<ExternalPaths extends string = never>(
+  registry: LocatorRegistry<Paths | ExternalPaths>,
+): void;
+
+export function defineLocators(registry: LocatorRegistry<Paths>) {
+  addHeader(registry);
+  registry.add("main").locator("main");
+  // "main.heading" is a slot — each page registers its own heading locator
+}
+```
+
+Page-level modules import `common.locators.ts` and their `Paths` type automatically includes everything from the common layer. See the [Locator Modules](/guides/composing-locator-modules) guide for the full overload signature pattern.
+
+## Fixtures
+
+Keep fixtures close to the page objects they instantiate. A typical fixture file for a set of related pages:
+
+```ts
+// fixtures/app/app.fixtures.ts
+import { test as base } from "pomwright";
+import { LoginPage } from "../../page-object-models/app/pages/login/login.page";
+import { DashboardPage } from "../../page-object-models/app/pages/dashboard/dashboard.page";
+
+type Fixtures = {
+  loginPage: LoginPage;
+  dashboardPage: DashboardPage;
+};
+
+export const test = base.extend<Fixtures>({
+  loginPage: async ({ page }, use) => {
+    await use(new LoginPage(page));
+  },
+  dashboardPage: async ({ page }, use) => {
+    await use(new DashboardPage(page));
+  },
+});
+
+export { expect } from "pomwright";
+```
+
+A root `all.fixtures.ts` can re-export from all domain fixture files so tests import from a single location:
+
+```ts
+// fixtures/all.fixtures.ts
+export { test, expect } from "./app/app.fixtures";
+```
+
+## Tests
+
+Organize test files by feature or by page route — whichever makes tests easier to find in your project:
+
+<Tabs>
+  <Tab title="By feature">
+    ```text
+    tests/
+    ├── auth/
+    │   ├── login.spec.ts
+    │   └── logout.spec.ts
+    ├── checkout/
+    │   ├── add-to-cart.spec.ts
+    │   └── payment.spec.ts
+    └── e2e/
+        └── full-purchase-flow.spec.ts
+    ```
+  </Tab>
+  <Tab title="By route">
+    ```text
+    tests/
+    ├── login/
+    │   └── login.spec.ts
+    ├── dashboard/
+    │   └── dashboard.spec.ts
+    ├── checkout/
+    │   └── checkout.spec.ts
+    └── e2e/
+        └── purchase-flow.spec.ts
+    ```
+  </Tab>
+</Tabs>
+
+Either approach works. For applications with a clear route structure, by-route mirrors the app's own navigation. For feature-rich pages tested across many scenarios, by-feature keeps related tests together regardless of which page they start on.
+
+## Summary
+
+<CardGroup cols={2}>
+  <Card title="Locator Modules" icon="puzzle-piece" href="/guides/composing-locator-modules">
+    Learn how to split and compose locator definitions across files.
+  </Card>
+  <Card title="Step Decorator" icon="shoe-prints" href="/guides/step-decorator">
+    Automatically wrap page methods in test.step for readable traces.
+  </Card>
+  <Card title="Session Storage" icon="database" href="/guides/session-storage">
+    Seed and inspect window.sessionStorage in tests.
+  </Card>
+  <Card title="Logging" icon="scroll" href="/guides/logging">
+    Attach structured log entries to the Playwright HTML report.
+  </Card>
+</CardGroup>

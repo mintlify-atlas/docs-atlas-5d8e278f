@@ -1,0 +1,449 @@
+---
+title: "Bridge Migration Guide for POMWright v1 to v2"
+sidebarTitle: "Bridge Migration"
+description: "Gradually migrate POMWright page objects from v1 BasePage to v2 PageObject using the BasePageV1toV2 bridge class, page by page at your own pace."
+---
+
+The bridge migration path is designed for teams that need to migrate at their own pace. Instead of converting every page object in one pass, you first swap `BasePage` for `BasePageV1toV2` — a compatibility shim that exposes both the v1 `initLocatorSchemas` ingestion pipeline and the v2 `add()` / `getLocator()` / `getNestedLocator()` accessor API simultaneously. Once both APIs coexist, you can migrate locator schemas from v1 to v2 incrementally, one page object at a time, before completing the final jump to `PageObject`. This page explains when to use the bridge, how to configure it, and how to work through the complete migration journey.
+
+<Warning>
+  `BasePageV1toV2` is deprecated and was **removed in POMWright 2.0.0**. It is intended solely as a temporary migration aid. Do not adopt it for net-new page objects — migrate those directly to `PageObject` instead.
+</Warning>
+
+## When to use bridge migration vs direct migration
+
+<CardGroup cols={2}>
+  <Card title="Use bridge migration when…" icon="bridge">
+    Your codebase has many page objects and you cannot dedicate a full sprint to migrating all of them at once. The bridge lets you keep shipping while migrating incrementally.
+  </Card>
+  <Card title="Use direct migration when…" icon="forward-fast">
+    Your codebase is small, your team can batch the work, or you want to adopt v2 URL typing and the navigation helper immediately without the extra bridge intermediate step.
+  </Card>
+</CardGroup>
+
+Skip `BasePageV1toV2` entirely if any of the following apply:
+
+- You can migrate all locators and call-sites in a short timeframe.
+- You want to adopt v2 URL typing and the `navigation` helper immediately.
+- You do not need `GetLocatorBase` or schema objects to keep working during migration.
+
+## Overview of the bridge
+
+`BasePageV1toV2` extends the v1 `BasePage` and layers the v2 `LocatorRegistry` on top of it. This means:
+
+- The v1 constructor signature (`page`, `testInfo`, `baseUrl`, `urlPath`, `pocName`, `log`) remains unchanged.
+- `initLocatorSchemas()` continues to work — v1 schemas registered there are still resolved correctly.
+- The v2 `defineLocators()` method is available alongside `initLocatorSchemas()`.
+- v2 accessors (`add`, `getLocator`, `getNestedLocator`, `getLocatorSchema`) are exposed on the bridge class and should be used from this point forward.
+- Paths registered in `defineLocators()` take precedence — the bridge skips v1 schema ingestion for any path already registered via `add()`.
+
+## Migration steps
+
+<Steps>
+  ### Step 1 — Switch from BasePage to BasePageV1toV2
+
+  Change the base class from `BasePage` to `BasePageV1toV2`. The constructor signature stays exactly the same. Add an empty `defineLocators()` stub — you will fill it in gradually in the next step.
+
+  <CodeGroup>
+  ```ts v1 — BasePage
+  import type { Page, TestInfo } from "@playwright/test";
+  import { BasePage, GetByMethod, type PlaywrightReportLogger } from "pomwright";
+
+  class LoginPage extends BasePage<Paths> {
+    constructor(page: Page, testInfo: TestInfo, log: PlaywrightReportLogger) {
+      super(page, testInfo, "https://example.com", "/login", "LoginPage", log);
+    }
+
+    protected initLocatorSchemas() {
+      this.locators.addSchema({
+        locatorSchemaPath: "main.button@login",
+        locatorMethod: GetByMethod.role,
+        role: "button",
+        roleOptions: { name: "Login" },
+      });
+    }
+  }
+  ```
+
+  ```ts Bridge — BasePageV1toV2
+  import type { Page, TestInfo } from "@playwright/test";
+  import { BasePageV1toV2, GetByMethod, type PlaywrightReportLogger } from "pomwright";
+
+  class LoginPage extends BasePageV1toV2<Paths> {
+    // Constructor signature unchanged
+    constructor(page: Page, testInfo: TestInfo, log: PlaywrightReportLogger) {
+      super(page, testInfo, "https://example.com", "/login", "LoginPage", log);
+    }
+
+    // Add this stub — migrate schemas into it gradually
+    protected defineLocators(): void {
+      // v2 add() calls go here
+    }
+
+    protected initLocatorSchemas(): void {
+      // v1 schemas remain here temporarily
+      this.locators.addSchema({
+        locatorSchemaPath: "main.button@login",
+        locatorMethod: GetByMethod.role,
+        role: "button",
+        roleOptions: { name: "Login" },
+      });
+    }
+  }
+  ```
+  </CodeGroup>
+
+  At this point the page object is functionally identical to the v1 version. All v1 tests continue to pass without any call-site changes.
+
+  ### Step 2 — Migrate locator schemas to defineLocators, one at a time
+
+  Begin moving schemas from `initLocatorSchemas` to `defineLocators` using the v2 fluent DSL. You can migrate as many or as few schemas per commit as you like. Paths registered in `defineLocators` are automatically skipped during v1 schema ingestion, so there is no risk of duplicate registration errors.
+
+  The mapping from `GetByMethod` enum values to v2 DSL methods is one-to-one:
+
+  | v1 `GetByMethod` | v2 DSL method |
+  |---|---|
+  | `GetByMethod.role` | `.getByRole(role, options?)` |
+  | `GetByMethod.text` | `.getByText(text, options?)` |
+  | `GetByMethod.label` | `.getByLabel(label, options?)` |
+  | `GetByMethod.placeholder` | `.getByPlaceholder(placeholder, options?)` |
+  | `GetByMethod.altText` | `.getByAltText(altText, options?)` |
+  | `GetByMethod.title` | `.getByTitle(title, options?)` |
+  | `GetByMethod.testId` | `.getByTestId(testId)` |
+  | `GetByMethod.locator` | `.locator(selector, options?)` |
+  | `GetByMethod.frameLocator` | `.frameLocator(selector)` |
+  | `GetByMethod.id` | `.getById(id)` |
+  | `GetByMethod.dataCy` | `.locator('[data-cy="..."]')` |
+
+  <CodeGroup>
+  ```ts Translating one schema at a time
+  // Before: in initLocatorSchemas
+  this.locators.addSchema({
+    locatorSchemaPath: "main.form@login.input@username",
+    locatorMethod: GetByMethod.label,
+    label: "Username",
+  });
+
+  // After: in defineLocators (move this line, remove the one above)
+  this.add("main.form@login.input@username").getByLabel("Username");
+  ```
+  </CodeGroup>
+
+  Once all schemas have been translated, `initLocatorSchemas` will be empty. Keep it as an empty method until you are ready to complete the final jump to `PageObject`.
+
+  ### Step 3 — Update call-sites to use v2 accessors
+
+  While you are migrating schemas, start updating the call-sites in tests and helper methods that reference the page object. The key differences at the call-site level are:
+
+  **`getLocator` and `getNestedLocator` are now synchronous** — remove the `await`.
+
+  <CodeGroup>
+  ```ts v1 — async call-sites
+  // Previously async
+  const loginBtn = await loginPage.getLocator("navbar.button@login");
+  await loginBtn.click();
+
+  const form = await loginPage.getNestedLocator("main.form@login");
+  await form.waitFor({ state: "visible" });
+  ```
+
+  ```ts v2 — synchronous call-sites
+  // Now synchronous — no await on getLocator/getNestedLocator
+  await loginPage.getLocator("navbar.button@login").click();
+
+  await loginPage.getNestedLocator("main.form@login").waitFor({ state: "visible" });
+  ```
+  </CodeGroup>
+
+  **Replace index maps with `.nth()`** — the index-map parameter on `getNestedLocator` is gone.
+
+  <CodeGroup>
+  ```ts v1 — index map
+  const submit = await poc.getNestedLocator("main.form.button@submit", {
+    "main.form": 0,
+  });
+  ```
+
+  ```ts v2 — nth() step
+  const submit = poc
+    .getLocatorSchema("main.form.button@submit")
+    .nth("main.form", 0)
+    .getNestedLocator();
+  ```
+  </CodeGroup>
+
+  **Replace `.addFilter()` with `.filter()`** — the method was renamed, semantics are unchanged.
+
+  <CodeGroup>
+  ```ts v1 — addFilter
+  const filtered = await poc
+    .getLocatorSchema("main.form@login.input@username")
+    .addFilter("main.form@login", { hasText: "Login" })
+    .getNestedLocator();
+  ```
+
+  ```ts v2 — filter
+  const filtered = poc
+    .getLocatorSchema("main.form@login.input@username")
+    .filter("main.form@login", { hasText: "Login" })
+    .getNestedLocator();
+  ```
+  </CodeGroup>
+
+  **Update v1 `update()` mutation chains** — the v1 `update(subPath, partial)` signature is replaced by the more granular v2 `.update()` / `.replace()` / `.remove()` methods.
+
+  <CodeGroup>
+  ```ts v1 — update with partial schema object
+  const patched = await poc
+    .getLocatorSchema("main.button@login")
+    .update("main.button@login", { roleOptions: { name: "Sign in" } })
+    .getNestedLocator();
+  ```
+
+  ```ts v2 — update with fluent DSL
+  const patched = poc
+    .getLocatorSchema("main.button@login")
+    .update("main.button@login")
+    .getByRole({ name: "Sign in" })
+    .getNestedLocator();
+  ```
+  </CodeGroup>
+
+  ### Step 4 — Review frame locators and getById regex patterns
+
+  Two v1 behaviours have changed semantics in v2 and require special attention before completing the migration.
+
+  **Frame locators** — v1 cast `FrameLocator` to `Locator` silently. In v2, register the frame with `.frameLocator(selector)`, then register child elements as normal paths — POMWright scopes the chain into the frame automatically.
+
+  <CodeGroup>
+  ```ts v1 — frameLocator schema
+  this.locators.addSchema({
+    locatorSchemaPath: "main.frame@login",
+    locatorMethod: GetByMethod.frameLocator,
+    frameLocator: "#auth",
+  });
+  ```
+
+  ```ts v2 — frameLocator in defineLocators
+  this.add("main.frame@login").frameLocator("#auth");
+  // Elements inside the frame are registered as normal paths below the frame segment:
+  this.add("main.frame@login.input@username").getByLabel("Username");
+  ```
+  </CodeGroup>
+
+  **`getById` regex patterns** — v1 used a prefix match (`[id^="pattern"]`) without CSS escaping. v2 uses a substring match (`[id*="pattern"]`) with CSS escaping. If your v1 code relied on prefix-match semantics, review those patterns and switch to exact string IDs where strict matching is required.
+
+  <CodeGroup>
+  ```ts v1 — getById (prefix match, no escaping)
+  this.locators.addSchema({
+    locatorSchemaPath: "main.modal@close",
+    locatorMethod: GetByMethod.id,
+    id: /close-modal/,
+  });
+  ```
+
+  ```ts v2 — getById (substring match with CSS escaping)
+  this.add("main.modal@close").getById(/close-modal/);
+  // Use a specific string for exact matching:
+  this.add("main.modal@close").getById("close-modal");
+  ```
+  </CodeGroup>
+
+  ### Step 5 — Complete the migration: switch to PageObject
+
+  Once `initLocatorSchemas` is empty and all call-sites have been updated to use v2 accessors, replace `BasePageV1toV2` with `PageObject`. This is the same set of changes as in the [Direct Migration guide](/migration/direct-migration):
+
+  - Change `extends BasePageV1toV2<Paths>` to `extends PageObject<Paths>`.
+  - Remove `testInfo` and `PlaywrightReportLogger` from the constructor.
+  - Remove the `pocName` positional argument; use `options.label` if needed.
+  - Delete `initLocatorSchemas()`.
+  - Add a concrete implementation of `pageActionsToPerformAfterNavigation()`.
+
+  <CodeGroup>
+  ```ts Bridge — BasePageV1toV2 (before final step)
+  class LoginPage extends BasePageV1toV2<Paths> {
+    constructor(page: Page, testInfo: TestInfo, log: PlaywrightReportLogger) {
+      super(page, testInfo, "https://example.com", "/login", "LoginPage", log);
+    }
+
+    protected defineLocators(): void {
+      this.add("main.form@login.input@username").getByLabel("Username");
+      this.add("main.button@login").getByRole("button", { name: "Login" });
+    }
+
+    protected initLocatorSchemas(): void {
+      // empty — all schemas migrated
+    }
+  }
+  ```
+
+  ```ts v2 — PageObject (after final step)
+  import type { Page } from "@playwright/test";
+  import { PageObject } from "pomwright";
+
+  class LoginPage extends PageObject<Paths> {
+    constructor(page: Page) {
+      super(page, "https://example.com", "/login", { label: "LoginPage" });
+    }
+
+    protected defineLocators(): void {
+      this.add("main.form@login.input@username").getByLabel("Username");
+      this.add("main.button@login").getByRole("button", { name: "Login" });
+    }
+
+    protected pageActionsToPerformAfterNavigation() {
+      return [
+        async () => {
+          await this.getNestedLocator("main.form@login").waitFor({
+            state: "visible",
+          });
+        },
+      ];
+    }
+  }
+  ```
+  </CodeGroup>
+
+  ### Step 6 — Update logging and SessionStorage
+
+  After switching to `PageObject`, two additional API areas need attention.
+
+  **Logging** — `PageObject` does not provide an embedded logger. Update fixtures to remove `testInfo` from page object constructors, and use the standalone `log` fixture for logging in tests.
+
+  <CodeGroup>
+  ```ts Bridge — fixture with testInfo
+  login: async ({ page, log }, use, testInfo) => {
+    const login = new Login(page, testInfo, log);
+    await use(login);
+  },
+  ```
+
+  ```ts v2 — fixture without testInfo
+  login: async ({ page }, use) => {
+    const login = new Login(page);
+    await use(login);
+  },
+  ```
+  </CodeGroup>
+
+  **SessionStorage** — update any remaining v1-style boolean flags to v2 options objects.
+
+  <CodeGroup>
+  ```ts v1 — boolean flag
+  await poc.sessionStorage.set({ token: "abc" }, true);
+  const data = await poc.sessionStorage.get(["token"]);
+  await poc.sessionStorage.clear();
+  ```
+
+  ```ts v2 — options objects
+  await poc.sessionStorage.set({ token: "abc" }, { reload: true });
+  const data = await poc.sessionStorage.get(["token"], { waitForContext: true });
+  await poc.sessionStorage.clear({ waitForContext: true });
+  ```
+  </CodeGroup>
+
+  ### Step 7 — Remove all v1 and bridge imports
+
+  Once all page objects have been migrated to `PageObject`, remove every import of the deprecated v1 and bridge symbols.
+
+  ```ts
+  // Remove all of these:
+  import {
+    BasePage,
+    BasePageV1toV2,
+    BasePageOptions,
+    BaseApi,
+    GetByMethod,
+    GetLocatorBase,
+    LocatorSchemaWithoutPath,
+    ExtractBaseUrlType,
+    ExtractUrlPathType,
+    ExtractFullUrlType,
+  } from "pomwright";
+  ```
+
+  ### Step 8 — Run the full test suite
+
+  Validate the migration end-to-end:
+
+  - All page object files compile without TypeScript errors.
+  - No `await` remains in front of synchronous `getLocator` / `getNestedLocator` calls.
+  - All fixture constructors have been updated to remove `testInfo`.
+  - Registry paths use the correct dot-delimited format (starts and ends with a word, no whitespace).
+</Steps>
+
+## Bridge class coexistence example
+
+The bridge class lets you run v1 and v2 locator definitions side-by-side while you migrate. The snippet below shows both `initLocatorSchemas` and `defineLocators` populated simultaneously — a valid intermediate state.
+
+```ts
+import type { Page, TestInfo } from "@playwright/test";
+import { BasePageV1toV2, GetByMethod, type PlaywrightReportLogger } from "pomwright";
+
+type Paths =
+  | "main.button@login"   // migrated to v2
+  | "main.form@login"     // still on v1
+  | "main.form@login.input@username"; // still on v1
+
+class LoginPage extends BasePageV1toV2<Paths> {
+  constructor(page: Page, testInfo: TestInfo, log: PlaywrightReportLogger) {
+    super(page, testInfo, "https://example.com", "/login", "LoginPage", log);
+  }
+
+  protected defineLocators(): void {
+    // Migrated schemas live here
+    this.add("main.button@login").getByRole("button", { name: "Login" });
+  }
+
+  protected initLocatorSchemas(): void {
+    // Remaining v1 schemas stay here until migrated
+    this.locators.addSchema({
+      locatorSchemaPath: "main.form@login",
+      locatorMethod: GetByMethod.role,
+      role: "form",
+      roleOptions: { name: "Login" },
+    });
+
+    this.locators.addSchema({
+      locatorSchemaPath: "main.form@login.input@username",
+      locatorMethod: GetByMethod.label,
+      label: "Username",
+    });
+  }
+}
+```
+
+<Note>
+  POMWright skips any path registered in `defineLocators()` during v1 schema ingestion. Move a schema from `initLocatorSchemas` to `defineLocators` and remove its `addSchema` entry — no duplicate registration errors will occur.
+</Note>
+
+## Bridge migration checklist
+
+<Accordion title="Show full bridge migration checklist">
+- [ ] Replace `extends BasePage` with `extends BasePageV1toV2` for each page object
+- [ ] Add empty `defineLocators()` stub to each bridged page object
+- [ ] Translate `addSchema` calls to `add(...).getBy...()` in `defineLocators`, one at a time
+  - [ ] Review and update frame locator schemas (v2 frame handling semantics changed)
+  - [ ] Review and update `getById` regex patterns (v2 uses substring match with CSS escaping)
+- [ ] Remove translated entries from `initLocatorSchemas` as they are moved
+- [ ] Update call-sites: remove `await` from `getLocator` / `getNestedLocator`
+- [ ] Replace index maps with `getLocatorSchema(path).nth(subPath, n)` chains
+- [ ] Replace `.addFilter(...)` with `.filter(...)`
+- [ ] Update `getLocatorSchema(path).update(...)` to v2 `.update()` / `.replace()` / `.remove()`
+- [ ] Replace `extends BasePageV1toV2` with `extends PageObject` for each fully migrated page object
+- [ ] Remove the `testInfo` and `PlaywrightReportLogger` constructor parameters from fully migrated classes
+- [ ] Add `pageActionsToPerformAfterNavigation()` to each class after switching to `PageObject`
+- [ ] Update fixtures to remove `testInfo` from page object constructors
+- [ ] Update `SessionStorage` call signatures (boolean → options objects)
+- [ ] Remove all v1 and bridge import symbols (`BasePage`, `BasePageV1toV2`, `GetByMethod`, etc.)
+- [ ] Run the full test suite and resolve any TypeScript or runtime errors
+</Accordion>
+
+<CardGroup cols={2}>
+  <Card title="v1 → v2 Overview" icon="table-columns" href="/migration/v1-to-v2-overview">
+    Complete side-by-side comparison of every v1 concept and its v2 equivalent.
+  </Card>
+  <Card title="Direct Migration Guide" icon="forward-fast" href="/migration/direct-migration">
+    Skip the bridge and migrate page objects straight to `PageObject` in one pass.
+  </Card>
+</CardGroup>

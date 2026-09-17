@@ -1,0 +1,325 @@
+---
+title: "PlaywrightReportLogger API Reference — POMWright"
+sidebarTitle: "ReportLogger"
+description: "Full reference for PlaywrightReportLogger: LogLevel, LogEntry, log methods, child loggers, level control, and attaching logs to the Playwright HTML report."
+---
+
+`PlaywrightReportLogger` is a structured logging class built for Playwright tests. It records timestamped log entries in memory during a test run and attaches them to the Playwright HTML report when the test finishes. All loggers created from the same root share a single log-level setting and a single entry list, so changing the level on any logger in the tree affects all of them — and the final report reflects every message regardless of which logger produced it.
+
+## Types
+
+### `LogLevel`
+
+```ts
+type LogLevel = "debug" | "info" | "warn" | "error";
+```
+
+Levels are ordered from least to most severe: `debug < info < warn < error`. A message is recorded only when its level is equal to or higher than the current log level.
+
+### `LogEntry`
+
+```ts
+type LogEntry = {
+  timestamp: Date;
+  logLevel: LogLevel;
+  prefix: string;
+  message: string;
+};
+```
+
+<ResponseField name="timestamp" type="Date">
+  The exact time the log call was made. Used to sort entries chronologically before attaching to the report.
+</ResponseField>
+
+<ResponseField name="logLevel" type="LogLevel">
+  The level at which the message was recorded (`"debug"`, `"info"`, `"warn"`, or `"error"`).
+</ResponseField>
+
+<ResponseField name="prefix" type="string">
+  The context name of the logger that produced this entry, shown in the report attachment label. Child loggers append their name with ` -> `, e.g. `TestCase -> LoginPage -> Axe`.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  The formatted message string, including any additional arguments joined with double newlines.
+</ResponseField>
+
+---
+
+## Constructor
+
+In normal usage you obtain a logger from the `test` fixture exported by `pomwright` and call `getNewChildLogger()` as needed. Direct instantiation is only necessary when wiring up a custom fixture.
+
+```ts
+import { PlaywrightReportLogger, type LogEntry, type LogLevel } from "pomwright";
+
+const sharedLogEntry: LogEntry[] = [];
+const sharedLogLevel: { current: LogLevel; initial: LogLevel } = {
+  current: "warn",
+  initial: "warn",
+};
+
+const log = new PlaywrightReportLogger(sharedLogLevel, sharedLogEntry, "TestCase");
+```
+
+<ParamField path="sharedLogLevel" type="{ current: LogLevel; initial: LogLevel }" required>
+  A mutable object holding the active log level (`current`) and the level to restore on `resetLogLevel()` (`initial`). This same object reference must be passed to every logger in the tree so that level changes are shared.
+</ParamField>
+
+<ParamField path="sharedLogEntry" type="LogEntry[]" required>
+  A mutable array that accumulates all log entries across the logger tree. This same array reference must be passed to every logger in the tree.
+</ParamField>
+
+<ParamField path="contextName" type="string" required>
+  A human-readable name for this logger's context, shown as a bracket-delimited prefix in report attachments. Child loggers append their name to this value separated by ` -> `.
+</ParamField>
+
+---
+
+## Log methods
+
+All four log methods accept a primary message string and any number of additional arguments. Additional arguments are converted to strings and appended to the message separated by double newlines. A message is silently dropped when its level falls below the current log level.
+
+```ts
+log.debug("fetching user", JSON.stringify(user));
+log.info("navigation started");
+log.warn("unexpected response status", response.status());
+log.error("login failed", errorMessage);
+```
+
+<ParamField path="message" type="string" required>
+  The primary log message.
+</ParamField>
+
+<ParamField path="...args" type="any[]">
+  Zero or more additional values appended to the message, joined with `\n\n`.
+</ParamField>
+
+<Tabs>
+  <Tab title="debug()">
+    Records a `"debug"` level entry. Only recorded when the current log level is `"debug"`.
+
+    ```ts
+    log.debug("locator resolved", locator.toString());
+    ```
+  </Tab>
+  <Tab title="info()">
+    Records an `"info"` level entry. Recorded when the current log level is `"debug"` or `"info"`.
+
+    ```ts
+    log.info("navigating to dashboard");
+    ```
+  </Tab>
+  <Tab title="warn()">
+    Records a `"warn"` level entry. Recorded when the current log level is `"debug"`, `"info"`, or `"warn"`.
+
+    ```ts
+    log.warn("retry attempt 2 of 3");
+    ```
+  </Tab>
+  <Tab title="error()">
+    Records an `"error"` level entry. Always recorded regardless of the current log level.
+
+    ```ts
+    log.error("assertion failed", err.message);
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## `getNewChildLogger(contextName)`
+
+Creates a child `PlaywrightReportLogger` that shares the same `sharedLogLevel` object and `sharedLogEntry` array as its parent. The child's context name is appended to the parent's, forming a breadcrumb trail in the report.
+
+```ts
+const pageLog = log.getNewChildLogger("LoginPage");
+pageLog.info("starting login flow");
+// Recorded as prefix: "TestCase -> LoginPage"
+
+const axeLog = pageLog.getNewChildLogger("Axe");
+axeLog.error("accessibility violation found");
+// Recorded as prefix: "TestCase -> LoginPage -> Axe"
+```
+
+<ParamField path="contextName" type="string" required>
+  The name segment appended to the parent's context name, separated by ` -> `.
+</ParamField>
+
+**Returns:** A new `PlaywrightReportLogger` instance sharing the same level and entry list.
+
+<Tip>
+  Pass child loggers into your page objects or helper classes so their messages appear alongside root-level test log entries in the same chronologically sorted report attachment.
+</Tip>
+
+---
+
+## Log level control
+
+The log level is shared across all loggers in the tree. Changing it on any logger affects every other logger derived from the same root.
+
+### `setLogLevel(level)`
+
+Overrides the current log level at runtime.
+
+```ts
+log.setLogLevel("debug"); // capture everything from this point
+```
+
+<ParamField path="level" type="LogLevel" required>
+  The new active log level: `"debug"`, `"info"`, `"warn"`, or `"error"`.
+</ParamField>
+
+### `getCurrentLogLevel()`
+
+Returns the currently active log level.
+
+```ts
+const level = log.getCurrentLogLevel(); // e.g. "warn"
+```
+
+**Returns:** `LogLevel`
+
+### `resetLogLevel()`
+
+Restores the log level to `initial`, the value the `sharedLogLevel` object was constructed with.
+
+```ts
+log.resetLogLevel();
+```
+
+### `isCurrentLogLevel(level)`
+
+Returns `true` when the current log level exactly equals the provided level.
+
+```ts
+if (log.isCurrentLogLevel("debug")) {
+  log.debug("verbose tracing enabled");
+}
+```
+
+<ParamField path="level" type="LogLevel" required>
+  The level to compare against the current log level.
+</ParamField>
+
+**Returns:** `boolean`
+
+### `isLogLevelEnabled(level)`
+
+Returns `true` when the provided level is equal to or higher than the current log level, meaning a message at that level would actually be recorded.
+
+```ts
+if (log.isLogLevelEnabled("info")) {
+  // safe to build an expensive info-level message
+}
+```
+
+<ParamField path="level" type="LogLevel" required>
+  The level to test for enablement.
+</ParamField>
+
+**Returns:** `boolean`
+
+---
+
+## `attachLogsToTest(testInfo)`
+
+Sorts all accumulated log entries by timestamp and attaches each one as a named attachment to the Playwright HTML report. JSON-serialisable messages are attached with `application/json` content type for structured display; all other messages use `text/plain`.
+
+```ts
+log.attachLogsToTest(testInfo);
+```
+
+<ParamField path="testInfo" type="TestInfo" required>
+  The Playwright `TestInfo` object available in fixtures and test hooks.
+</ParamField>
+
+Each attachment is named in the format:
+
+```text
+HH:MM:SS DD.MM.YYYY - LEVEL : [ContextName]
+```
+
+For example:
+
+```text
+20:49:51 05.05.2023 - ERROR : [TestCase -> LoginPage -> Axe]
+```
+
+<Note>
+  `attachLogsToTest` is called automatically when you use the `test` fixture exported from `pomwright`. You only need to call it manually in a custom fixture setup.
+</Note>
+
+---
+
+## Built-in `test` fixture
+
+POMWright exports a pre-configured `test` fixture from `pomwright` that automatically injects a root `PlaywrightReportLogger` as the `log` fixture.
+
+```ts
+import { test, expect } from "pomwright";
+
+test("logs are attached to the HTML report", async ({ page, log }) => {
+  log.info("navigating to login");
+  await page.goto("https://example.com/login");
+
+  const pageLog = log.getNewChildLogger("LoginPage");
+  pageLog.debug("checking URL");
+
+  expect(page.url()).toContain("/login");
+});
+```
+
+**Fixture behaviour:**
+
+- On the **first attempt** (`testInfo.retry === 0`), the initial log level is `"warn"`.
+- On **retries**, the initial log level is `"debug"`, so all messages are captured for debugging.
+- At the end of every test, `attachLogsToTest` is called automatically.
+
+The built-in fixture source:
+
+```ts
+export const test = base.extend<{ log: PlaywrightReportLogger }>({
+  log: async ({}, use, testInfo) => {
+    const sharedLogEntry: LogEntry[] = [];
+    const sharedLogLevel: { current: LogLevel; initial: LogLevel } =
+      testInfo.retry === 0
+        ? { current: "warn", initial: "warn" }
+        : { current: "debug", initial: "debug" };
+
+    const log = new PlaywrightReportLogger(sharedLogLevel, sharedLogEntry, "TestCase");
+    await use(log);
+    log.attachLogsToTest(testInfo);
+  },
+});
+```
+
+---
+
+## Manual fixture setup
+
+If your project uses `@playwright/test` directly rather than the re-exported `test` from `pomwright`, you can wire up the logger manually.
+
+```ts
+import { test as base } from "@playwright/test";
+import { PlaywrightReportLogger, type LogEntry, type LogLevel } from "pomwright";
+
+type Fixtures = { log: PlaywrightReportLogger };
+
+export const test = base.extend<Fixtures>({
+  log: async ({}, use, testInfo) => {
+    const sharedLogEntry: LogEntry[] = [];
+    const sharedLogLevel: { current: LogLevel; initial: LogLevel } =
+      testInfo.retry === 0
+        ? { current: "warn", initial: "warn" }
+        : { current: "debug", initial: "debug" };
+
+    const log = new PlaywrightReportLogger(sharedLogLevel, sharedLogEntry, "TestCase");
+    await use(log);
+    log.attachLogsToTest(testInfo);
+  },
+});
+```
+
+<Tip>
+  Extend your custom `test` fixture when you also have page object fixtures — pass a child logger into each page object via `log.getNewChildLogger("MyPage")` so their output is interleaved with test-level messages in the report.
+</Tip>

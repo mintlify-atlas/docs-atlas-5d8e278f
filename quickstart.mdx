@@ -1,47 +1,139 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Quickstart: From Zero to Your First POMWright Test"
+sidebarTitle: "Quickstart"
+description: "Install POMWright, create a typed LoginPage, wire a Playwright fixture, and run a fully working test — all in four steps."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide takes you from a fresh Playwright project to a working POMWright test. You will install the package, create a `LoginPage` that extends `PageObject`, register it as a Playwright fixture, and write a test that navigates and logs in. Each step builds on the last, and the whole flow takes under ten minutes.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Install POMWright">
+    Add POMWright as a dev dependency alongside your existing `@playwright/test` installation.
+
+    <CodeGroup>
+
+    ```bash npm
+    npm install --save-dev pomwright
+    ```
+
+    ```bash pnpm
+    pnpm add -D pomwright
+    ```
+
+    ```bash yarn
+    yarn add --dev pomwright
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      POMWright requires `@playwright/test` `>=1.57.0 <2.0.0` as a peer dependency. No POMWright-specific config file is needed — everything is wired through your existing Playwright setup.
+    </Note>
+  </Step>
+
+  <Step title="Create a Page Object">
+    Create `login.page.ts`. Extend `PageObject<Paths>` with your typed path union, implement `defineLocators()` to register every selector, and implement `pageActionsToPerformAfterNavigation()` to describe the "loaded" state. Annotate action methods with `@step()` so they appear as named steps in the Playwright HTML report.
+
+    ```ts login.page.ts
+    import { type Page } from "@playwright/test";
+    import { PageObject, step } from "pomwright";
+
+    type Paths =
+      | "main"
+      | "main.form@login"
+      | "main.form@login.input@username"
+      | "main.form@login.input@password"
+      | "main.button@login";
+
+    export class LoginPage extends PageObject<Paths> {
+      constructor(page: Page) {
+        super(page, "https://example.com", "/login");
+      }
+
+      protected defineLocators(): void {
+        this.add("main").locator("main");
+        this.add("main.form@login").getByRole("form", { name: "Login" });
+        this.add("main.form@login.input@username").getByLabel("Username");
+        this.add("main.form@login.input@password").getByLabel("Password");
+        this.add("main.button@login").getByRole("button", { name: "Login" });
+      }
+
+      protected pageActionsToPerformAfterNavigation() {
+        return [
+          async () => {
+            await this.getNestedLocator("main.form@login").waitFor({ state: "visible" });
+          },
+        ];
+      }
+
+      @step()
+      async login(username: string, password: string) {
+        await this.getNestedLocator("main.form@login.input@username").fill(username);
+        await this.getNestedLocator("main.form@login.input@password").fill(password);
+        await this.getNestedLocator("main.button@login").click();
+      }
+    }
+    ```
+
+    **What's happening here:**
+
+    - `super(page, baseUrl, urlPath)` wires the Playwright `Page`, base URL, and path into the registry and navigation helper.
+    - `this.add("main").locator("main")` registers a CSS locator under the path `"main"`.
+    - `this.add("main.form@login").getByRole(...)` registers a role-based locator as a child of `"main"` in the path hierarchy.
+    - `getNestedLocator("main.form@login.input@username")` at call time resolves to `page.locator("main").getByRole("form", { name: "Login" }).getByLabel("Username")` — the full chain is composed automatically.
+    - `pageActionsToPerformAfterNavigation()` runs after `navigation.gotoThisPage()`, asserting the page is in a known-good state before tests continue.
+    - `@step()` wraps `login(...)` in a `test.step` call named `LoginPage.login`, which surfaces in the HTML report with no extra boilerplate.
+  </Step>
+
+  <Step title="Wire a Playwright Fixture">
+    Create `fixtures.ts` alongside your tests. Extend Playwright's `base` test to inject `LoginPage` as a typed fixture. This is the same pattern as vanilla Playwright — POMWright does not require a special base test for this.
+
+    ```ts fixtures.ts
+    import { test as base } from "@playwright/test";
+    import { LoginPage } from "./login.page";
+
+    type Fixtures = {
+      loginPage: LoginPage;
+    };
+
+    export const test = base.extend<Fixtures>({
+      loginPage: async ({ page }, use) => {
+        await use(new LoginPage(page));
+      },
+    });
+    ```
+
+    <Tip>
+      POMWright also exports its own `test` base fixture that includes a pre-wired `log` instance for structured logging. Import `test` from `"pomwright"` instead of `"@playwright/test"` if you want logging support without wiring it manually.
+    </Tip>
+  </Step>
+
+  <Step title="Write Your First Test">
+    Import `test` from your fixtures file and use the `loginPage` fixture. Call `navigation.gotoThisPage()` to navigate to the login URL and wait for `pageActionsToPerformAfterNavigation()` to complete, then call your action method.
+
+    ```ts login.spec.ts
+    import { test } from "./fixtures";
+
+    test("login flow", async ({ loginPage }) => {
+      await loginPage.navigation.gotoThisPage();
+      await loginPage.login("alice", "secret");
+    });
+    ```
+
+    Run the test with your normal Playwright command:
 
     ```bash
-    npm install your-package
+    npx playwright test login.spec.ts
     ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+    The Playwright HTML report will show `LoginPage.login` as a named step, and if the login form is not visible after navigation the test will fail immediately with a clear locator wait timeout — not a cryptic element-not-found error mid-test.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+<Note>
+  **Where to go next:**
+  - [Locator Registry](/concepts/locator-registry) — Learn how typed paths, `getLocator` vs `getNestedLocator`, schema mutations, and reusable seeds work.
+  - [Composing Locator Modules](/guides/composing-locator-modules) — Move locator definitions into a companion file and share them across Page Objects without inheritance.
+</Note>

@@ -1,0 +1,258 @@
+---
+title: "POMWright v1 to v2 Migration Overview"
+sidebarTitle: "v1 → v2 Overview"
+description: "A high-level comparison of every major v1 and v2 concept, with a side-by-side table and guidance on choosing direct vs bridge migration."
+---
+
+POMWright v2 is a complete redesign of the locator system, base class, and supporting helpers. While the core philosophy stays the same — typed path-based locator modeling and automatic locator chaining — every public API surface has been modernised to align with Playwright-native ergonomics, improve composability, and remove tight coupling between test infrastructure and page objects. This page maps every v1 concept to its v2 equivalent so you know exactly what needs to change before you start.
+
+## What changed at a glance
+
+<CardGroup cols={2}>
+  <Card title="BasePage → PageObject" icon="arrow-right-arrow-left" href="/migration/direct-migration">
+    The v1 `BasePage` required `testInfo` and `PlaywrightReportLogger` in every constructor. The v2 `PageObject` only requires `Page`, making fixtures and constructors much lighter.
+  </Card>
+  <Card title="Schema objects → Fluent DSL" icon="code" href="/migration/direct-migration">
+    `addSchema(path, { locatorMethod, ... })` is replaced by a fluent builder: `this.add(path).getByRole(...)`. The new syntax mirrors native Playwright locator chains.
+  </Card>
+  <Card title="Async → Sync retrieval" icon="bolt" href="/migration/direct-migration">
+    Every `getLocator`, `getNestedLocator`, and `getLocatorSchema` call was `async` in v1. In v2 they are fully synchronous — drop the `await` and remove the `async` requirement from call-sites.
+  </Card>
+  <Card title="Index maps → .nth()" icon="list-ol" href="/migration/direct-migration">
+    v1 `getNestedLocator(path, { "sub.path": 0 })` index maps are replaced by ordered `.nth("sub.path", 0)` steps that can be freely interspersed with `.filter()` calls.
+  </Card>
+</CardGroup>
+
+## Full feature comparison
+
+The table below maps every major v1 concept to its v2 equivalent. Cells marked **New in v2** have no v1 counterpart.
+
+| Area | v1 | v2 |
+|---|---|---|
+| Base class | `BasePage` (requires `Page`, `testInfo`, `PlaywrightReportLogger`) | `PageObject` (requires `Page` only) |
+| Constructor name arg | `pocName` positional string | `options.label` (optional, defaults to class name) |
+| Locator definitions | `initLocatorSchemas()` + `this.locators.addSchema(path, obj)` | `defineLocators()` + `this.add(path).getBy...()` |
+| Locator retrieval | `await getLocator(path)` / `await getNestedLocator(path)` | `getLocator(path)` / `getNestedLocator(path)` (synchronous) |
+| Locator registry class | `GetLocatorBase` | `LocatorRegistry` via `createRegistryWithAccessors` |
+| Indexing | `getNestedLocator(path, { "sub.path": 0 })` | `getLocatorSchema(path).nth("sub.path", 0).getNestedLocator()` |
+| Filtering | `getLocatorSchema(path).addFilter("sub.path", opts)` | `getLocatorSchema(path).filter("sub.path", opts)` |
+| Mutation | `getLocatorSchema(path).update(sub, partial)` | `.update()`, `.replace()`, `.remove()`, `clearSteps()` |
+| Locator annotation | Not available | `.describe("label")` — **New in v2** |
+| Reusable locators | `LocatorSchemaWithoutPath` spread objects | `createReusable.getByRole(...)` + `add(path, { reuse })` |
+| Frame locators | `FrameLocator` cast as `Locator` | Non-terminal frames scope the chain into the frame; terminal frames return `frameLocator.owner()` |
+| `getById` regex | Prefix match `[id^="pattern"]`, no escaping | Substring match `[id*="pattern"]` with CSS escaping |
+| URL type options | `BasePageOptions.urlOptions` + `ExtractBaseUrlType` helpers | `UrlTypeOptions` + `BaseUrlTypeFromOptions` helpers (flat shape) |
+| Navigation helper | Not provided | `PageObject.navigation` with `goto`, `gotoThisPage`, `expectThisPage`, `expectAnotherPage` |
+| Post-navigation hook | Not provided | `pageActionsToPerformAfterNavigation()` abstract method |
+| SessionStorage | `set(state, true)` / `get([keys])` / `clear()` | `set(state, { reload })` / `get([keys], { waitForContext })` / `clear([keys], { waitForContext })` |
+| Logging | Logger injected via constructor, embedded in `BasePage` | Optional `log` fixture from `pomwright`; not embedded in `PageObject` |
+| Step decorator | Not available | `@step()` decorator — **New in v2** |
+| Base API class | `BaseApi` | Not provided — bring your own |
+| `data-cy` selector | Custom engine built into `BasePage` | Removed — use `locator('[data-cy="..."]')` |
+| Bridge class | — | `BasePageV1toV2` (deprecated, removed in 2.0.0) |
+
+## Base class constructor: before and after
+
+The single biggest structural change in every page object class is the constructor signature.
+
+<CodeGroup>
+```ts v1 — BasePage
+import type { Page, TestInfo } from "@playwright/test";
+import { BasePage, GetByMethod, type PlaywrightReportLogger } from "pomwright";
+
+class LoginPage extends BasePage<Paths> {
+  constructor(page: Page, testInfo: TestInfo, log: PlaywrightReportLogger) {
+    super(page, testInfo, "https://example.com", "/login", "LoginPage", log);
+  }
+
+  protected initLocatorSchemas() {
+    this.locators.addSchema("main.button@login", {
+      locatorMethod: GetByMethod.role,
+      role: "button",
+      roleOptions: { name: "Login" },
+    });
+  }
+}
+```
+
+```ts v2 — PageObject
+import type { Page } from "@playwright/test";
+import { PageObject } from "pomwright";
+
+class LoginPage extends PageObject<Paths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login", { label: "LoginPage" });
+  }
+
+  protected defineLocators(): void {
+    this.add("main.button@login").getByRole("button", { name: "Login" });
+  }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [];
+  }
+}
+```
+</CodeGroup>
+
+<Note>
+  `testInfo` and `PlaywrightReportLogger` are no longer part of `PageObject`. The `pocName` positional argument is replaced by the optional `options.label` — and because the label defaults to the class name, you can often omit it entirely.
+</Note>
+
+## Locator schema definitions: before and after
+
+Locator definitions are the most voluminous change. Every `addSchema` call is replaced with a one-line fluent call that mirrors how you would write a locator natively in Playwright.
+
+<CodeGroup>
+```ts v1 — addSchema + GetByMethod
+this.locators.addSchema("main", {
+  locatorMethod: GetByMethod.locator,
+  locator: "main",
+});
+
+this.locators.addSchema("main.button@login", {
+  locatorMethod: GetByMethod.role,
+  role: "button",
+  roleOptions: { name: "Login" },
+});
+
+this.locators.addSchema("main.form@login.input@username", {
+  locatorMethod: GetByMethod.label,
+  label: "Username",
+});
+```
+
+```ts v2 — fluent DSL
+this.add("main").locator("main");
+this.add("main.button@login").getByRole("button", { name: "Login" });
+this.add("main.form@login.input@username").getByLabel("Username");
+```
+</CodeGroup>
+
+The `GetByMethod` enum and `LocatorSchema` objects are entirely removed in v2. The full mapping of every `GetByMethod` value to its v2 DSL method is covered in the [Direct Migration guide](/migration/direct-migration).
+
+## Retrieval, filtering, and indexing: before and after
+
+<CodeGroup>
+```ts v1 — async with index maps
+// Basic retrieval (async)
+const login = await poc.getLocator("navbar.button@login");
+
+// Nested retrieval with index map
+const submit = await poc.getNestedLocator("main.form.button@submit", {
+  "main.form": 0,
+});
+
+// Filter chain
+const filtered = await poc
+  .getLocatorSchema("main.list.item")
+  .addFilter("main.list", { hasText: "list" })
+  .addFilter("main.list.item", { hasText: "Row" })
+  .getNestedLocator({ "main.list": 0, "main.list.item": -1 });
+```
+
+```ts v2 — synchronous with nth() + filter()
+// Basic retrieval (sync)
+await poc.getLocator("navbar.button@login").click();
+
+// Nested retrieval with nth()
+const submit = poc
+  .getLocatorSchema("main.form.button@submit")
+  .nth("main.form", 0)
+  .getNestedLocator();
+
+// Filter and nth chained freely in order
+const filtered = poc
+  .getLocatorSchema("main.list.item")
+  .filter("main.list", { hasText: "list" })
+  .nth("main.list", 0)
+  .filter({ hasText: "Row" })   // omitting path defaults to terminal path
+  .nth(-1)                      // omitting path defaults to terminal path
+  .getNestedLocator();
+```
+</CodeGroup>
+
+## Choosing a migration path
+
+Two supported paths exist for getting from v1 to v2. The right choice depends on the size of your codebase and how quickly you need to ship.
+
+<CardGroup cols={2}>
+  <Card title="Direct Migration" icon="forward-fast" href="/migration/direct-migration">
+    Migrate each page object straight from `BasePage` to `PageObject` in one pass. Best for smaller codebases or teams that can dedicate a focused sprint to the migration.
+  </Card>
+  <Card title="Bridge Migration" icon="bridge" href="/migration/bridge-migration">
+    Migrate from `BasePage` to `BasePageV1toV2` first, then gradually move locator schemas to the v2 DSL before completing the jump to `PageObject`. Best for large codebases where a big-bang migration is risky.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Both `BasePage` and `BasePageV1toV2` were removed in **POMWright 2.0.0**. The bridge class is a temporary migration aid only — plan to remove it before upgrading to 2.0.0.
+</Warning>
+
+## SessionStorage signature changes
+
+The `SessionStorage` API is preserved in v2 but all boolean parameters have been replaced with options objects and new `waitForContext` support has been added.
+
+<CodeGroup>
+```ts v1 — boolean flags
+await poc.sessionStorage.set({ token: "abc" }, true);
+const data = await poc.sessionStorage.get(["token"]);
+await poc.sessionStorage.clear();
+```
+
+```ts v2 — options objects
+await poc.sessionStorage.set({ token: "abc" }, { reload: true });
+const data = await poc.sessionStorage.get(["token"], { waitForContext: true });
+await poc.sessionStorage.clear({ waitForContext: true });
+// Or clear only specific keys:
+await poc.sessionStorage.clear(["token"], { waitForContext: true });
+```
+</CodeGroup>
+
+## Logging
+
+In v1, logging required importing `test` from `pomwright` and passing a `PlaywrightReportLogger` instance into every `BasePage` constructor. In v2, the `log` fixture is completely decoupled from `PageObject` — you can use it anywhere in a test or fixture without any inheritance requirement.
+
+<CodeGroup>
+```ts v1 — injected logger
+// fixture
+login: async ({ page, log }, use, testInfo) => {
+  const login = new Login(page, testInfo, log);
+  await use(login);
+},
+```
+
+```ts v2 — log fixture
+import { test } from "pomwright";
+
+test("login flow", async ({ page, log }) => {
+  log.info("starting login");
+});
+```
+</CodeGroup>
+
+## Step decorator (new in v2)
+
+The `@step()` decorator is a new addition in v2 that wraps any async POM method in a named `test.step` block automatically.
+
+```ts
+import { step } from "pomwright";
+
+class LoginPage extends PageObject<Paths> {
+  @step()
+  async loginAsUser(user: User) {
+    // method body is automatically wrapped in test.step
+  }
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Direct Migration Guide" icon="forward-fast" href="/migration/direct-migration">
+    Step-by-step instructions for migrating directly from v1 `BasePage` to v2 `PageObject`.
+  </Card>
+  <Card title="Bridge Migration Guide" icon="bridge" href="/migration/bridge-migration">
+    How to use `BasePageV1toV2` to migrate incrementally, page by page, at your own pace.
+  </Card>
+</CardGroup>

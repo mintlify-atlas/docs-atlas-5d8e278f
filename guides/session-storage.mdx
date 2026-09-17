@@ -1,0 +1,174 @@
+---
+title: "Managing Session Storage in Playwright Tests"
+sidebarTitle: "Session Storage"
+description: "Set, queue, read, and clear window.sessionStorage in Playwright tests using POMWright's SessionStorage helper, with waitForContext support."
+---
+
+POMWright provides a `SessionStorage` class that wraps `window.sessionStorage` operations in Playwright `test.step` calls. It handles the common timing problems — navigations destroying the JavaScript execution context before your data is written — through a `waitForContext` option and a navigation-queued write API. The helper is available directly on every `PageObject` instance or can be instantiated as a standalone fixture.
+
+## Methods overview
+
+<CardGroup cols={2}>
+  <Card title="set()" icon="pen-to-square" href="#set">
+    Write key/value pairs immediately, with optional page reload.
+  </Card>
+  <Card title="setOnNextNavigation()" icon="clock" href="#setonnextnavigation">
+    Queue data to be written after the next main-frame navigation.
+  </Card>
+  <Card title="get()" icon="magnifying-glass" href="#get">
+    Read all entries or a specific subset of keys.
+  </Card>
+  <Card title="clear()" icon="trash" href="#clear">
+    Remove all entries or a targeted subset of keys.
+  </Card>
+</CardGroup>
+
+## set()
+
+`set(states, options?)` writes key/value pairs to `window.sessionStorage`. Values are serialized with `JSON.stringify` before writing.
+
+```ts
+await loginPage.sessionStorage.set({ token: "abc", theme: "dark" });
+```
+
+### Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `reload` | `boolean` | Reload the page after writing. |
+| `waitForContext` | `boolean` | Wait for a valid main-frame execution context before writing. |
+
+```ts
+// Reload after writing so the app picks up the new values
+await loginPage.sessionStorage.set({ token: "abc" }, { reload: true });
+
+// Wait for context to become available (e.g., during initial navigation)
+await loginPage.sessionStorage.set({ theme: "dark" }, { waitForContext: true });
+```
+
+<Warning>
+  If `waitForContext` is omitted and no execution context is available (for
+  example, before the first navigation or during a reload), `set` throws:
+  `SessionStorage context is not available.`
+</Warning>
+
+## setOnNextNavigation()
+
+`setOnNextNavigation(states)` queues data to be written to session storage immediately after the next main-frame `framenavigated` event. This is useful when you need to seed storage before an app route initializes its own state.
+
+Multiple calls before the navigation merge their states into a single write:
+
+```ts
+await loginPage.sessionStorage.setOnNextNavigation({ theme: "dark" });
+await loginPage.sessionStorage.setOnNextNavigation({ token: "abc" });
+// Both { theme: "dark" } and { token: "abc" } are written after the next navigation
+```
+
+A single `framenavigated` listener is registered on the first call. Subsequent calls before the navigation fires only update the queued object. After the navigation, the queue is flushed and cleared automatically.
+
+<Note>
+  `setOnNextNavigation` works regardless of whether a context currently exists
+  — it always waits for the next navigation event, even if the page already has
+  an active context.
+</Note>
+
+## get()
+
+`get(keys?, options?)` reads values from session storage. Without arguments it returns all entries; with a keys array it returns only the requested keys.
+
+```ts
+// Read everything
+const all = await loginPage.sessionStorage.get();
+
+// Read specific keys
+const subset = await loginPage.sessionStorage.get(["token", "theme"]);
+```
+
+### Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `waitForContext` | `boolean` | Wait for a valid main-frame execution context before reading. |
+
+```ts
+const data = await loginPage.sessionStorage.get(
+  ["token", "theme"],
+  { waitForContext: true },
+);
+```
+
+## clear()
+
+`clear()` supports multiple overload signatures — clear everything, clear a single key, clear an array of keys, or any of those combined with `waitForContext`:
+
+```ts
+// Clear all entries
+await loginPage.sessionStorage.clear();
+
+// Clear a single key
+await loginPage.sessionStorage.clear("token");
+
+// Clear multiple keys
+await loginPage.sessionStorage.clear(["token", "theme"]);
+
+// With waitForContext
+await loginPage.sessionStorage.clear({ waitForContext: true });
+await loginPage.sessionStorage.clear(["token"], { waitForContext: true });
+```
+
+## Using SessionStorage via PageObject
+
+Every `PageObject` exposes `this.sessionStorage` pre-configured with the page's label. No setup required:
+
+```ts
+import { test, expect } from "./fixtures";
+
+test("session storage via PageObject", async ({ loginPage }) => {
+  await loginPage.navigation.gotoThisPage();
+  await loginPage.sessionStorage.set({ token: "abc" }, { reload: true });
+  await loginPage.sessionStorage.setOnNextNavigation({ theme: "dark" });
+
+  const data = await loginPage.sessionStorage.get(["token", "theme"], {
+    waitForContext: true,
+  });
+  await loginPage.sessionStorage.clear(["token"], { waitForContext: true });
+
+  expect(data.token).toBe("abc");
+});
+```
+
+## Using SessionStorage as a standalone fixture
+
+If you need session storage access outside of a `PageObject` — for example, in a utility fixture — instantiate `SessionStorage` directly:
+
+```ts
+import { test as base } from "pomwright";
+import { SessionStorage } from "pomwright";
+
+type Fixtures = { sessionStorage: SessionStorage };
+
+export const test = base.extend<Fixtures>({
+  sessionStorage: async ({ page }, use) => {
+    await use(new SessionStorage(page, { label: "SessionStorage" }));
+  },
+});
+```
+
+The `label` option is optional. When provided, it prefixes every step title:
+
+```
+SessionStorage.set:
+LoginPage.SessionStorage.get:
+```
+
+## Context availability details
+
+Internally, `SessionStorage` detects a usable context by calling `page.evaluate(() => typeof window !== 'undefined' && window.sessionStorage !== undefined)`. If this throws or returns false, the context is considered unavailable.
+
+When `waitForContext: true` is set, the helper registers a `framenavigated` listener on the main frame and retries the context check after each navigation until it succeeds. This covers the typical case where `set` or `get` is called before the initial page load completes.
+
+<Tip>
+  Use `waitForContext: true` whenever you call `set` or `get` early in a test
+  flow, before `navigation.gotoThisPage()` has resolved — for instance, when
+  seeding storage as part of fixture setup.
+</Tip>

@@ -1,0 +1,507 @@
+---
+title: "Direct v1 to v2 Migration Guide for POMWright"
+sidebarTitle: "Direct Migration"
+description: "Step-by-step instructions for migrating POMWright page objects directly from v1 BasePage to v2 PageObject, with before-and-after code for every change."
+---
+
+The direct migration path moves each page object straight from the v1 `BasePage` to the v2 `PageObject` in a single pass — no intermediate bridge class is involved. This approach works best for smaller codebases or for teams that can dedicate a focused sprint to the migration. Every change you need to make is mechanical and predictable: swap the base class, translate schema objects to the fluent DSL, remove `await` from locator calls, and update the small number of API signatures that changed. The sections below walk through each step in order with concrete before-and-after examples drawn directly from the source.
+
+<Warning>
+  `BasePage` and all other v1 exports (`GetByMethod`, `GetLocatorBase`, `LocatorSchemaWithoutPath`, `BaseApi`, `BasePageV1toV2`, etc.) were **removed in POMWright 2.0.0**. Complete the migration and remove all v1 imports before upgrading past v1.5.
+</Warning>
+
+## Migration steps
+
+<Steps>
+  ### Inventory your v1 usage
+
+  Before changing code, make a list of every location in your project that uses a v1 API. The items to search for are:
+
+  - Classes that `extend BasePage`
+  - `initLocatorSchemas` method bodies and any separate `locatorSchema.ts` files that call `locators.addSchema`
+  - `LocatorSchema` object literals and `GetByMethod` enum references
+  - `getLocatorSchema(...).update(...)` and `.addFilter(...)` call chains
+  - `await getLocator(...)` and `await getNestedLocator(...)` call-sites (the `await` is the v1 signal)
+  - `SessionStorage` calls that pass a boolean second argument to `set`
+  - `PlaywrightReportLogger` constructor parameters and fixture wiring
+  - Any `data-cy` selectors or custom selector engine registrations
+
+  Having this list upfront prevents you from missing a call-site after the base class has already changed.
+
+  ### Migrate the class declaration and constructor
+
+  Replace `extends BasePage<Paths>` with `extends PageObject<Paths>`. In the constructor, remove `testInfo`, `PlaywrightReportLogger`, and the positional `pocName` string, then switch the last `super(...)` argument from the string name to an optional `{ label }` options object.
+
+  You must also add the `pageActionsToPerformAfterNavigation()` abstract method. Return an empty array if no post-navigation actions are needed.
+
+  <CodeGroup>
+  ```ts v1 — BasePage constructor
+  import type { Page, TestInfo } from "@playwright/test";
+  import { BasePage, GetByMethod, type PlaywrightReportLogger } from "pomwright";
+
+  class LoginPage extends BasePage<Paths> {
+    constructor(page: Page, testInfo: TestInfo, log: PlaywrightReportLogger) {
+      super(page, testInfo, "https://example.com", "/login", "LoginPage", log);
+    }
+
+    protected initLocatorSchemas() {
+      this.locators.addSchema("main.button@login", {
+        locatorMethod: GetByMethod.role,
+        role: "button",
+        roleOptions: { name: "Login" },
+      });
+    }
+  }
+  ```
+
+  ```ts v2 — PageObject constructor
+  import type { Page } from "@playwright/test";
+  import { PageObject } from "pomwright";
+
+  class LoginPage extends PageObject<Paths> {
+    constructor(page: Page) {
+      super(page, "https://example.com", "/login", { label: "LoginPage" });
+    }
+
+    protected defineLocators(): void {
+      this.add("main.button@login").getByRole("button", { name: "Login" });
+    }
+
+    protected pageActionsToPerformAfterNavigation() {
+      return [];
+    }
+  }
+  ```
+  </CodeGroup>
+
+  <Tip>
+    The `label` option defaults to the class name, so `{ label: "LoginPage" }` is equivalent to omitting the options object entirely when the class is already named `LoginPage`.
+  </Tip>
+
+  ### Translate locator schemas to the v2 DSL
+
+  Every `this.locators.addSchema(path, { locatorMethod, ... })` call in `initLocatorSchemas` becomes a single `this.add(path).getBy...()` call in `defineLocators`. The method name maps directly from the `locatorMethod` enum value.
+
+  | v1 `GetByMethod` | v2 DSL method |
+  |---|---|
+  | `GetByMethod.role` | `.getByRole(role, options?)` |
+  | `GetByMethod.text` | `.getByText(text, options?)` |
+  | `GetByMethod.label` | `.getByLabel(label, options?)` |
+  | `GetByMethod.placeholder` | `.getByPlaceholder(placeholder, options?)` |
+  | `GetByMethod.altText` | `.getByAltText(altText, options?)` |
+  | `GetByMethod.title` | `.getByTitle(title, options?)` |
+  | `GetByMethod.testId` | `.getByTestId(testId)` |
+  | `GetByMethod.locator` | `.locator(selector, options?)` |
+  | `GetByMethod.frameLocator` | `.frameLocator(selector)` |
+  | `GetByMethod.id` (custom) | `.getById(id)` |
+  | `GetByMethod.dataCy` (custom) | `.locator('[data-cy="..."]')` |
+
+  <CodeGroup>
+  ```ts v1 — initLocatorSchemas
+  protected initLocatorSchemas() {
+    this.locators.addSchema("main", {
+      locatorMethod: GetByMethod.locator,
+      locator: "main",
+    });
+
+    this.locators.addSchema("main.section@login", {
+      locatorMethod: GetByMethod.role,
+      role: "region",
+      roleOptions: { name: "Login" },
+    });
+
+    this.locators.addSchema("main.section@login.form", {
+      locatorMethod: GetByMethod.role,
+      role: "form",
+    });
+
+    this.locators.addSchema("main.section@login.form.input@username", {
+      locatorMethod: GetByMethod.label,
+      label: "Username",
+    });
+
+    this.locators.addSchema("main.section@login.form.button@login", {
+      locatorMethod: GetByMethod.role,
+      role: "button",
+      roleOptions: { name: "Login" },
+    });
+  }
+  ```
+
+  ```ts v2 — defineLocators
+  protected defineLocators(): void {
+    this.add("main").locator("main");
+
+    this.add("main.section@login").getByRole("region", { name: "Login" });
+
+    this.add("main.section@login.form").getByRole("form");
+
+    this.add("main.section@login.form.input@username").getByLabel("Username");
+
+    this.add("main.section@login.form.button@login").getByRole("button", {
+      name: "Login",
+    });
+  }
+  ```
+  </CodeGroup>
+
+  <Note>
+    If you keep locator schemas in a separate file, update the function signature from `(locators: GetLocatorBase<Paths>)` to accept the v2 `LocatorRegistry` type, or move the definitions into the class `defineLocators()` method directly. The `GetLocatorBase` type is removed in v2.
+  </Note>
+
+  ### Replace getLocator and getNestedLocator call-sites
+
+  In v1 both `getLocator` and `getNestedLocator` were `async`. In v2 they are synchronous. Remove every `await` in front of these calls. If the call was inside an `async` function solely because of the locator retrieval, that function may no longer need to be `async`.
+
+  <CodeGroup>
+  ```ts v1 — async retrieval
+  // Basic retrieval
+  const loginBtn = await poc.getLocator("navbar.button@login");
+  await loginBtn.click();
+
+  // Nested retrieval (no index)
+  const logout = await poc.getNestedLocator("navbar.button@logout");
+  await logout.click();
+
+  // Shorthand — await is also valid inline here
+  await (await poc.getNestedLocator("navbar.button@logout")).click();
+  ```
+
+  ```ts v2 — synchronous retrieval
+  // Basic retrieval
+  await poc.getLocator("navbar.button@login").click();
+
+  // Nested retrieval (no index)
+  await poc.getNestedLocator("navbar.button@logout").click();
+
+  // Inline — no intermediate variable needed
+  await poc.getNestedLocator("navbar.button@logout").click();
+  ```
+  </CodeGroup>
+
+  ### Replace index maps with .nth()
+
+  The v1 `getNestedLocator(path, { "sub.path": index })` index-map parameter is removed. In v2, use `getLocatorSchema(path).nth("sub.path", index).getNestedLocator()` instead. Multiple indices and filters can be chained in any order.
+
+  <CodeGroup>
+  ```ts v1 — index map parameter
+  const submit = await poc.getNestedLocator("main.form.button@submit", {
+    "main.form": 0,
+  });
+
+  // Multiple indices
+  const item = await poc.getNestedLocator("main.list.item.link", {
+    "main.list": 2,
+    "main.list.item": 1,
+  });
+  ```
+
+  ```ts v2 — nth() steps
+  const submit = poc
+    .getLocatorSchema("main.form.button@submit")
+    .nth("main.form", 0)
+    .getNestedLocator();
+
+  // Multiple nth() calls — applied in chain order
+  const item = poc
+    .getLocatorSchema("main.list.item.link")
+    .nth("main.list", 2)
+    .nth("main.list.item", 1)
+    .getNestedLocator();
+  ```
+  </CodeGroup>
+
+  ### Replace addFilter with filter and update mutation chains
+
+  The v1 `.addFilter(subPath, filterOpts)` method is renamed `.filter(subPath, filterOpts)` in v2. The semantics are the same. The v1 `.update(subPath, partial)` method is replaced by the more granular v2 mutations: `.update()`, `.replace()`, and `.remove()`.
+
+  <CodeGroup>
+  ```ts v1 — addFilter + update
+  // addFilter
+  const filtered = await poc
+    .getLocatorSchema("main.list.item")
+    .addFilter("main.list", { hasText: "list" })
+    .addFilter("main.list.item", { hasText: "Row" })
+    .getNestedLocator({ "main.list": 0, "main.list.item": -1 });
+
+  // update
+  const patched = await poc
+    .getLocatorSchema("main.button@login")
+    .update("main.button@login", { roleOptions: { name: "Sign in" } })
+    .addFilter("main.button@login", { hasText: /Sign in/i })
+    .getNestedLocator();
+  ```
+
+  ```ts v2 — filter + update/replace/remove
+  // filter and nth freely interspersed
+  const filtered = poc
+    .getLocatorSchema("main.list.item")
+    .filter("main.list", { hasText: "list" })
+    .nth("main.list", 0)
+    .filter({ hasText: "Row" })   // no path = terminal path
+    .nth(-1)                      // no path = terminal path
+    .getNestedLocator();
+
+  // update (modifies a locator option on a segment)
+  const patched = poc
+    .getLocatorSchema("main.button@login")
+    .update("main.button@login")
+    .getByRole({ name: "Sign in" })
+    .filter("main.button@login", { hasText: /Sign in/i })
+    .getNestedLocator();
+
+  // replace (swaps the locator method for a segment entirely)
+  const post = poc
+    .getLocatorSchema("main.button@login")
+    .replace()         // defaults to terminal path
+    .getByText("Sign in")
+    .getNestedLocator();
+
+  // remove (removes a segment from the chain)
+  const noMain = poc
+    .getLocatorSchema("main.button@login")
+    .remove("main")
+    .getNestedLocator();
+  ```
+  </CodeGroup>
+
+  ### Update SessionStorage signatures
+
+  The `SessionStorage` API is preserved but the boolean second argument to `set` is replaced by an options object, and `get` / `clear` now accept an optional `{ waitForContext }` options parameter.
+
+  <CodeGroup>
+  ```ts v1 — boolean flags
+  // set with reload
+  await poc.sessionStorage.set({ token: "abc" }, true);
+
+  // get specific keys
+  const data = await poc.sessionStorage.get(["token"]);
+
+  // clear all
+  await poc.sessionStorage.clear();
+  ```
+
+  ```ts v2 — options objects
+  // set with reload
+  await poc.sessionStorage.set({ token: "abc" }, { reload: true });
+
+  // get specific keys — waitForContext avoids context errors during navigation
+  const data = await poc.sessionStorage.get(["token"], { waitForContext: true });
+
+  // clear all
+  await poc.sessionStorage.clear({ waitForContext: true });
+
+  // clear specific keys
+  await poc.sessionStorage.clear(["token"], { waitForContext: true });
+  ```
+  </CodeGroup>
+
+  <Tip>
+    Use `waitForContext: true` whenever you call `get`, `set`, or `clear` near navigation boundaries (e.g., before the first navigation, or during reloads). Leave it `false` (the default) when you are sure the page already has a valid execution context.
+  </Tip>
+
+  ### Update logging and fixtures
+
+  In v1, every `BasePage` subclass received a `PlaywrightReportLogger` in its constructor and the fixture wired it in via `testInfo`. In v2, logging is a standalone `log` fixture — no constructor injection required.
+
+  <CodeGroup>
+  ```ts v1 — fixture with testInfo and log
+  // myApp.fixtures.ts
+  import { test as base } from "pomwright";
+  import Login from "../pom/login.page";
+
+  export const test = base.extend<{ login: Login }>({
+    login: async ({ page, log }, use, testInfo) => {
+      const login = new Login(page, testInfo, log);
+      await use(login);
+    },
+  });
+  ```
+
+  ```ts v2 — fixture without testInfo
+  // myApp.fixtures.ts
+  import { test as base } from "pomwright";
+  import Login from "../pom/login.page";
+
+  export const test = base.extend<{ login: Login }>({
+    login: async ({ page }, use) => {
+      const login = new Login(page);
+      await use(login);
+    },
+  });
+  ```
+
+  ```ts v2 — using the log fixture in a test
+  import { test } from "pomwright";
+
+  test("login flow", async ({ page, log }) => {
+    log.info("starting login test");
+  });
+  ```
+  </CodeGroup>
+
+  If you want to attach a logger to a page object class in v2, pass a child logger explicitly — `PageObject` does not provide one automatically.
+
+  ### Update navigation usage
+
+  `PageObject` exposes a `navigation` helper that is URL-type aware. The `pageActionsToPerformAfterNavigation()` method you added in step 2 is called automatically after each navigation.
+
+  ```ts
+  // Inside your PageObject subclass:
+  protected pageActionsToPerformAfterNavigation() {
+    return [
+      async () => {
+        await this.getNestedLocator("main.form@login").waitFor({
+          state: "visible",
+        });
+      },
+    ];
+  }
+
+  // In tests or helper methods:
+  await loginPage.navigation.gotoThisPage();
+  await loginPage.navigation.expectThisPage();
+  await loginPage.navigation.expectAnotherPage();
+  await loginPage.navigation.goto("/another-path"); // prefixes with loginPage.baseUrl
+  ```
+
+  <Note>
+    If `fullUrl` is a `RegExp`, only `expectThisPage` and `expectAnotherPage` are available. The `goto` and `gotoThisPage` methods require a `string` URL.
+  </Note>
+
+  ### Remove all v1 imports
+
+  Once all page objects have been migrated, remove every import of deprecated v1 symbols:
+
+  ```ts
+  // Remove all of these:
+  import {
+    BasePage,
+    BasePageOptions,
+    BasePageV1toV2,
+    BaseApi,
+    GetByMethod,
+    GetLocatorBase,
+    LocatorSchemaWithoutPath,
+    ExtractBaseUrlType,
+    ExtractUrlPathType,
+    ExtractFullUrlType,
+  } from "pomwright";
+  ```
+
+  Replace URL type helpers with their v2 counterparts if needed:
+
+  | v1 helper | v2 helper |
+  |---|---|
+  | `ExtractBaseUrlType<Options>` | `BaseUrlTypeFromOptions<Options>` |
+  | `ExtractUrlPathType<Options>` | `UrlPathTypeFromOptions<Options>` |
+  | `ExtractFullUrlType<Options>` | `FullUrlTypeFromOptions<Options>` |
+
+  Note the options shape also flattened: `{ urlOptions: { baseUrlType, urlPathType } }` becomes `{ baseUrlType, urlPathType }`.
+
+  ### Validate after migration
+
+  Run your test suite. Check that:
+
+  - All page object files compile without TypeScript errors.
+  - Registry paths match the expected dot-delimited format (no whitespace, starts and ends with a word).
+  - No `await` remains in front of synchronous v2 `getLocator` / `getNestedLocator` calls.
+  - All fixture files have been updated to remove `testInfo` arguments.
+</Steps>
+
+## Migration checklist
+
+Use this checklist to track progress across all page objects in your project.
+
+<Accordion title="Show full migration checklist">
+- [ ] Inventory all `BasePage` subclasses and v1 call-sites
+- [ ] Replace `extends BasePage` with `extends PageObject`
+- [ ] Remove `testInfo`, `PlaywrightReportLogger`, and `pocName` from constructors
+- [ ] Rename `initLocatorSchemas` → `defineLocators`
+- [ ] Convert every `this.locators.addSchema(path, obj)` to `this.add(path).getBy...()`
+- [ ] Remove `GetByMethod` enum usage
+- [ ] Replace `data-cy` schemas with `locator('[data-cy="..."]')`
+- [ ] Add `pageActionsToPerformAfterNavigation()` to every migrated class
+- [ ] Remove `await` from all `getLocator` / `getNestedLocator` calls
+- [ ] Replace index maps with `getLocatorSchema(path).nth(subPath, index)` chains
+- [ ] Replace `.addFilter(...)` with `.filter(...)`
+- [ ] Update `SessionStorage` call signatures (boolean → options object)
+- [ ] Update fixtures to remove `testInfo` from page object constructors
+- [ ] Adopt the v2 `log` fixture for logging, or wire it explicitly
+- [ ] Remove all v1 import symbols
+- [ ] Update URL type helpers to their v2 renamed counterparts if used
+- [ ] Run the test suite and fix any remaining TypeScript or runtime errors
+</Accordion>
+
+## Reference: reusable locators in v2
+
+If your v1 code used `LocatorSchemaWithoutPath` objects spread across multiple `addSchema` calls, v2 provides `createReusable` for the same purpose with stronger typing.
+
+<CodeGroup>
+```ts v1 — LocatorSchemaWithoutPath spread
+import { GetByMethod, type LocatorSchemaWithoutPath } from "pomwright";
+
+const orderItemDetails: LocatorSchemaWithoutPath = {
+  locator: ".order-item-details",
+  locatorMethod: GetByMethod.locator,
+};
+
+this.locators.addSchema("main.confirmation.orderItem.details", {
+  ...orderItemDetails,
+});
+
+this.locators.addSchema("main.confirmation.orderItem.details@activationTime", {
+  ...orderItemDetails,
+  locatorOptions: { hasText: "Activation date:" },
+});
+```
+
+```ts v2 — createReusable
+import type { LocatorRegistry } from "pomwright";
+
+const orderItemDetails = createReusable.locator(".order-item-details");
+
+this.add("main.confirmation.orderItem.details", { reuse: orderItemDetails });
+
+this.add("main.confirmation.orderItem.details@activationTime", {
+  reuse: orderItemDetails,
+}).locator({ hasText: "Activation date:" });
+
+// You can also reuse a previously registered path by string reference:
+this.add("main.confirmation.orderItem.details@activationTimeError", {
+  reuse: "errors.invalidActivationTime",
+});
+```
+</CodeGroup>
+
+## Reference: frame locators
+
+Frame locator handling was silently broken in v1 (a `FrameLocator` was cast to `Locator`). In v2 the behaviour is explicit and predictable.
+
+<CodeGroup>
+```ts v1 — frameLocator cast as Locator
+this.locators.addSchema("main.frame@login", {
+  locatorMethod: GetByMethod.frameLocator,
+  frameLocator: "#auth",
+});
+```
+
+```ts v2 — explicit frame handling
+// Register the frame
+this.add("main.frame@login").frameLocator("#auth");
+
+// Register elements inside the frame as normal — POMWright scopes the chain into the frame
+this.add("main.frame@login.input@username").getByLabel("Username");
+```
+</CodeGroup>
+
+When the frame locator path is **not** the terminal segment (i.e., there are more segments after it), POMWright enters the frame context and continues resolving child locators inside it. When the frame locator path **is** the terminal segment, it returns `frameLocator.owner()` — the `<iframe>` element itself — so you can assert its visibility.
+
+<CardGroup cols={2}>
+  <Card title="v1 → v2 Overview" icon="table-columns" href="/migration/v1-to-v2-overview">
+    Full feature comparison table covering every API area.
+  </Card>
+  <Card title="Bridge Migration Guide" icon="bridge" href="/migration/bridge-migration">
+    Prefer a gradual, page-by-page migration? Use the bridge path instead.
+  </Card>
+</CardGroup>

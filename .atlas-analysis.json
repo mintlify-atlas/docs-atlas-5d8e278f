@@ -1,0 +1,111 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "POMWright",
+  "projectDescription": "POMWright is a TypeScript companion framework for Playwright that formalizes Page Object Model workflows with a typed locator registry, automatic locator chaining, session storage helpers, structured logging, and a step decorator.",
+  "theme": "luma",
+  "primaryColor": "#ffcd00",
+  "lightColor": "#ffffff",
+  "darkColor": "#040404",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/page-object",
+              "concepts/locator-registry",
+              "concepts/locator-paths"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/composing-locator-modules",
+              "guides/session-storage",
+              "guides/logging",
+              "guides/step-decorator",
+              "guides/project-structure"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "migration/v1-to-v2-overview",
+              "migration/direct-migration",
+              "migration/bridge-migration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "PageObject",
+            "pages": [
+              "api/page-object"
+            ]
+          },
+          {
+            "group": "Locator Registry",
+            "pages": [
+              "api/locator-registry",
+              "api/locator-schema-builder"
+            ]
+          },
+          {
+            "group": "Helpers",
+            "pages": [
+              "api/session-storage",
+              "api/playwright-report-logger",
+              "api/step-decorator",
+              "api/navigation"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Typed locator paths with compile-time and runtime validation",
+    "Automatic locator chaining via LocatorRegistry (getNestedLocator)",
+    "Fluent locator registration DSL (add().getByRole().filter().nth())",
+    "Non-mutating clone-based query overrides via getLocatorSchema()",
+    "Reusable locator seeds for shared patterns across pages",
+    "Abstract PageObject base class with navigation, sessionStorage, and registry wiring",
+    "SessionStorage API with queueing and context-safe operations",
+    "PlaywrightReportLogger with child loggers and HTML report attachment",
+    "@step() decorator wrapping test methods in Playwright test.step",
+    "Composable locator modules with TypeScript overload pattern"
+  ],
+  "publicApiSurface": [
+    "PageObject (abstract class)",
+    "createRegistryWithAccessors(page)",
+    "LocatorRegistry<Paths>",
+    "AddAccessor<Paths>",
+    "GetLocatorAccessor<Paths>",
+    "GetNestedLocatorAccessor<Paths>",
+    "GetLocatorSchemaAccessor<Paths>",
+    "SessionStorage",
+    "PlaywrightReportLogger",
+    "step() decorator",
+    "test (Playwright fixture with log)",
+    "NavigationOptions",
+    "UrlTypeOptions",
+    "BaseUrlTypeFromOptions",
+    "UrlPathTypeFromOptions",
+    "FullUrlTypeFromOptions",
+    "LogEntry",
+    "LogLevel"
+  ]
+}

@@ -1,0 +1,225 @@
+---
+title: "Locator Paths: Typed Schema Paths in POMWright"
+sidebarTitle: "Locator Paths"
+description: "Explore POMWright's typed locator schema paths: dot-delimited string unions, compile-time and runtime format rules, the @-separator convention, and sub-path utility types."
+---
+
+Every locator in POMWright is keyed by a dot-delimited string called a **locator schema path**. Paths are not plain strings — they are members of a typed string literal union that POMWright validates structurally at both compile time and runtime. This means mistyped paths cause TypeScript errors before tests ever run, and invalid paths passed at runtime throw descriptive errors rather than silently resolving to the wrong element.
+
+## What a path is
+
+A locator schema path is a non-empty, dot-delimited string where each segment represents one level of the page's structural hierarchy. The full union of all paths you intend to register is declared as a TypeScript type alias, typically called `Paths`, and passed as the first generic argument to `PageObject` or `createRegistryWithAccessors`.
+
+```ts
+type Paths =
+  | "common.spinner"
+  | "main"
+  | "main.form@login"
+  | "main.form@login.input@username"
+  | "main.form@login.input@password"
+  | "main.button@login";
+```
+
+Each string in the union must satisfy the `LocatorSchemaPathFormat<S>` constraint. If it does not, TypeScript replaces it with a diagnostic tuple type that identifies the violation — so the IDE highlights the problem at the declaration site rather than only at call sites.
+
+## Format rules
+
+The `LocatorSchemaPathFormat<S>` type enforces four structural rules, applied both at compile time through recursive conditional types and at runtime through `validateLocatorSchemaPath`:
+
+<CardGroup cols={2}>
+  <Card title="No empty string" icon="ban">
+    The path must contain at least one character. An empty string `""` is immediately rejected.
+  </Card>
+  <Card title="No leading or trailing dot" icon="circle-dot">
+    Paths must not start with `"."` or end with `"."`. A trailing dot implies a missing segment; a leading dot implies a missing root.
+  </Card>
+  <Card title="No consecutive dots" icon="ellipsis">
+    `"main..form"` contains an empty segment and is invalid. Every dot must separate two non-empty segments.
+  </Card>
+  <Card title="No Unicode whitespace" icon="space-awesome">
+    All 25 Unicode characters with `White_Space=Yes` — including `\t`, `\n`, no-break space, and ideographic space — are forbidden anywhere in the path.
+  </Card>
+</CardGroup>
+
+### Compile-time validation
+
+When your `Paths` union contains a literal that violates any rule, TypeScript replaces that literal in accessor argument positions with a diagnostic tuple:
+
+```ts
+type LocatorSchemaPathError<S extends string, Reason extends string> = [
+  "Invalid locator schema path",
+  Reason,
+  S,
+];
+```
+
+For example, using `".main.form"` as a path produces:
+
+```
+["Invalid locator schema path", "String can't start with '.'", ".main.form"]
+```
+
+Valid paths in the same union are not affected — their autocomplete and type checking continue to work normally.
+
+### Runtime validation
+
+The same rules are enforced at runtime when `add(path)`, `getLocator(path)`, `getNestedLocator(path)`, or `getLocatorSchema(path)` is called. The errors are descriptive and include the offending path:
+
+| Violation | Runtime error message |
+|---|---|
+| Empty string | `LocatorSchemaPath string cannot be empty` |
+| Leading dot | `LocatorSchemaPath string cannot start with a dot: .foo` |
+| Trailing dot | `LocatorSchemaPath string cannot end with a dot: foo.` |
+| Consecutive dots | `LocatorSchemaPath string cannot contain consecutive dots: foo..bar` |
+| Whitespace | `LocatorSchemaPath string cannot contain whitespace chars: ...` |
+
+## Path naming conventions
+
+Paths mirror the structural nesting of your page's DOM. Each dot-separated segment names one containment level. The `@` character is a conventional disambiguator for cases where multiple elements of the same structural role exist at the same nesting level.
+
+```ts
+type Paths =
+  | "main"                                    // The <main> landmark
+  | "main.form@login"                         // The login form inside main
+  | "main.form@login.input@username"          // Username input inside the login form
+  | "main.form@login.input@password"          // Password input inside the login form
+  | "main.form@register"                      // A separate registration form inside main
+  | "main.form@register.input@email"          // Email input inside the registration form
+  | "main.button@login"                       // Login button (not inside the form path)
+  | "common.spinner"                          // A shared spinner used across pages
+  | "shell.frame@auth"                        // An iframe with a disambiguating name
+  | "shell.frame@auth.input@username";        // An element inside the auth iframe
+```
+
+<Tip>
+  The `@` separator is a convention, not a special syntax. Paths are plain strings — any character that is not a dot or a Unicode whitespace character is valid in a segment. The `@` simply reads well as "form at login" versus "form at register" when scanning a path union.
+</Tip>
+
+### Good naming practices
+
+- **Use semantic segment names** — `form@login.input@username` is more meaningful than `section1.div3.input1`.
+- **Group shared elements** under a common prefix** — `common.spinner`, `common.banner@error` keep shared elements visually distinct from page-specific ones.
+- **Mirror DOM hierarchy** — each dot in the path should correspond to a meaningful containment boundary in the page, not every single DOM node.
+- **Use `@` for disambiguation at the same level** — `button@submit` and `button@cancel` are clearer than `button1` and `button2`.
+
+## The `LocatorSchemaPathFormat` type
+
+```ts
+export type LocatorSchemaPathFormat<S extends string> = string extends S
+  ? S
+  : S extends ""
+    ? LocatorSchemaPathError<S, "String can't be empty">
+    : _LocatorSchemaPathFormat<S, S, true, false>;
+```
+
+When `S` is a wide `string` (not a literal), the type passes through as-is — deep validation only applies to string literals. This means paths computed at runtime from non-literal sources are validated exclusively at runtime.
+
+The helper `_LocatorSchemaPathFormat` walks the string character by character, threading `AtStart` and `PrevDot` boolean flags through the recursion to catch every rule violation:
+
+```ts
+type _LocatorSchemaPathFormat<
+  Original extends string,
+  Rest extends string,
+  AtStart extends boolean,
+  PrevDot extends boolean,
+> = Rest extends ""
+  ? PrevDot extends true
+    ? LocatorSchemaPathError<Original, "String can't end with '.'">
+    : Original
+  : Rest extends `${infer C}${infer Tail}`
+    ? C extends UnicodeWhitespaceChar
+      ? LocatorSchemaPathError<Original, "String can't contain whitespace chars">
+      : C extends "."
+        ? AtStart extends true
+          ? LocatorSchemaPathError<Original, "String can't start with '.'">
+          : PrevDot extends true
+            ? LocatorSchemaPathError<Original, "String can't contain consecutive '.'">
+            : _LocatorSchemaPathFormat<Original, Tail, false, true>
+        : _LocatorSchemaPathFormat<Original, Tail, false, false>
+    : never;
+```
+
+## Sub-paths and `getLocatorSchema`
+
+A **sub-path** is any prefix of a full path that itself forms a valid path. For a path `"a.b.c"`, the valid sub-paths are `"a"`, `"a.b"`, and `"a.b.c"`. Sub-paths appear in `getLocatorSchema` builder methods to let you target ancestor segments rather than always the terminal:
+
+```ts
+const locator = registry
+  .getLocatorSchema("main.form@login.input@username")
+  .filter("main.form@login", { hasText: "Login form" })  // targets ancestor
+  .nth("main.form@login.input@username", 0)              // targets terminal
+  .getNestedLocator();
+```
+
+If you supply a sub-path that is not a valid ancestor of the root path, the builder throws:
+
+```
+"some.other.path" is not a valid sub-path of "main.form@login.input@username".
+```
+
+When a sub-path argument is omitted, the builder defaults to the root path (the terminal segment).
+
+### `ExtractSubPaths<Path>`
+
+`ExtractSubPaths` is a recursive utility type that computes the union of all valid sub-paths for a given path literal:
+
+```ts
+export type ExtractSubPaths<Path extends string> = Path extends `${infer Head}.${infer Tail}`
+  ? Head | `${Head}.${ExtractSubPaths<Tail>}`
+  : Path;
+
+// ExtractSubPaths<"main.form@login.input@username">
+// => "main" | "main.form@login" | "main.form@login.input@username"
+```
+
+### `LocatorChainPaths<LocatorSchemaPathType, LocatorSubstring>`
+
+`LocatorChainPaths` extracts from the full `Paths` union only those paths that fall within a given sub-path scope. This is used internally to narrow the set of valid path arguments for builder methods like `filter` and `nth`:
+
+```ts
+export type LocatorChainPaths<
+  LocatorSchemaPathType extends string,
+  LocatorSubstring extends LocatorSchemaPathType | undefined,
+> = LocatorSubstring extends string
+  ? Extract<LocatorSchemaPathType, LocatorSubstring | ExtractSubPaths<LocatorSubstring>>
+  : never;
+```
+
+Given `Paths = "main" | "main.form@login" | "main.form@login.input@username" | "main.button@login"` and `LocatorSubstring = "main.form@login.input@username"`, `LocatorChainPaths` resolves to `"main" | "main.form@login" | "main.form@login.input@username"` — only the ancestors and the path itself, not `"main.button@login"` which shares `"main"` but is not an ancestor of the terminal.
+
+## Validity utilities
+
+Two helper types let you filter a union down to only its valid members:
+
+```ts
+// Returns the path if it satisfies LocatorSchemaPathFormat, otherwise never
+export type LocatorSchemaPathValid<Path extends string> = Path extends unknown
+  ? LocatorSchemaPathFormat<Path> extends Path
+    ? Path
+    : never
+  : never;
+
+// Returns only the format-error members from a union (invalid paths only)
+export type LocatorSchemaPathErrors<Paths extends string> =
+  Exclude<LocatorSchemaPathFormat<Paths>, Paths>;
+```
+
+`LocatorSchemaPathErrors` is useful for asserting in tests that your `Paths` union contains no invalid members:
+
+```ts
+// If this type resolves to `never`, your entire Paths union is valid.
+type Errors = LocatorSchemaPathErrors<Paths>;
+```
+
+## Summary of key types from `types.ts`
+
+| Type | Purpose |
+|---|---|
+| `LocatorSchemaPathFormat<S>` | Validates a string literal `S`; returns `S` if valid, or an error tuple if not |
+| `LocatorSchemaPathError<S, Reason>` | The diagnostic tuple emitted for invalid paths |
+| `LocatorSchemaPathValid<Path>` | Filters to valid-only members from a literal type |
+| `LocatorSchemaPathErrors<Paths>` | Extracts only the invalid members from a union |
+| `ExtractSubPaths<Path>` | Computes all valid sub-paths of a given path literal |
+| `LocatorChainPaths<PathType, Substring>` | Narrows a full path union to the ancestors of a given path |
+| `RegistryPath<LocatorSchemaPathType>` | Intersection type ensuring only valid paths reach the registry |
+| `UnicodeWhitespaceChar` | Union of all 25 Unicode whitespace code points forbidden in paths |

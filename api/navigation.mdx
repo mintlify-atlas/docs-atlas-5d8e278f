@@ -1,0 +1,252 @@
+---
+title: "Navigation Helper API Reference for POMWright Tests"
+sidebarTitle: "Navigation"
+description: "Full reference for the POMWright navigation helper: goto, gotoThisPage, expectThisPage, expectAnotherPage, NavigationOptions, and post-navigation hooks."
+---
+
+The navigation helper exposes typed methods for driving browser navigation and asserting the current URL inside Playwright tests. Every method is wrapped in a named `test.step` so navigation actions appear clearly in the HTML report and trace viewer. The helper is available at `PageObject.navigation` and its surface area is automatically narrowed based on whether the page object's `fullUrl` is a `string` or a `RegExp` — preventing compile-time use of `goto` or `gotoThisPage` on regex-based pages where those operations are unsupported.
+
+## Available on `PageObject`
+
+You do not instantiate the navigation helper directly. It is created for you inside the `PageObject` constructor and exposed as `this.navigation`:
+
+```ts
+import { PageObject } from "pomwright";
+
+class LoginPage extends PageObject<LocatorPaths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/login");
+  }
+
+  protected defineLocators() { /* ... */ }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return null;
+  }
+}
+
+// In a test:
+await loginPage.navigation.gotoThisPage();
+await loginPage.navigation.expectThisPage();
+```
+
+---
+
+## `NavigationOptions`
+
+Both navigation methods and assertion methods accept an optional `NavigationOptions` object to override timing behaviour on a per-call basis.
+
+```ts
+export type NavigationOptions = {
+  waitUntil?: WaitUntil;
+  waitForLoadState?: State;
+};
+```
+
+<ParamField path="waitUntil" type="WaitUntil">
+  Passed to Playwright's `page.goto()` and `page.waitForURL()`. Determines when navigation is considered complete. Accepts the same values as Playwright's `goto` option: `"load"` | `"domcontentloaded"` | `"networkidle"` | `"commit"`. Defaults to `"load"`.
+</ParamField>
+
+<ParamField path="waitForLoadState" type="State">
+  Passed to `page.waitForLoadState()`, used by `expectAnotherPage` before validating the URL. Accepts `"load"` | `"domcontentloaded"` | `"networkidle"`. Defaults to `"load"`.
+</ParamField>
+
+<Info>
+  `waitUntil` controls `goto` and `expectThisPage`; `waitForLoadState` controls `expectAnotherPage`. Each method uses only the relevant option.
+</Info>
+
+---
+
+## String `fullUrl` — `NavigationString`
+
+When both `baseUrl` and `urlPath` are strings, `fullUrl` is a string and the helper exposes the full `NavigationString` interface, including the two navigation methods.
+
+### `goto(urlPathOrUrl, options?)`
+
+Navigates to an arbitrary URL or URL path. When the input starts with `/`, the page object's `baseUrl` is prepended automatically; otherwise the string is used as-is.
+
+```ts
+// Navigate to a path — baseUrl is prepended
+await loginPage.navigation.goto("/login?redirect=/dashboard");
+
+// Navigate to an absolute URL
+await loginPage.navigation.goto("https://staging.example.com/login");
+```
+
+Step title: `<label>: Navigate to the provided URL or URL Path`
+
+<ParamField path="urlPathOrUrl" type="string" required>
+  The destination. When the value starts with `/` it is appended to `baseUrl`; otherwise it is used verbatim.
+</ParamField>
+
+<ParamField path="options" type="NavigationOptions">
+  Per-call navigation options. `waitUntil` is used; `waitForLoadState` is ignored by this method.
+</ParamField>
+
+---
+
+### `gotoThisPage(options?)`
+
+Navigates to the page object's own `fullUrl` and then executes any actions registered in `pageActionsToPerformAfterNavigation()`.
+
+```ts
+await loginPage.navigation.gotoThisPage();
+
+// Override wait behaviour for a single call
+await loginPage.navigation.gotoThisPage({ waitUntil: "networkidle" });
+```
+
+Step title: `<label>: Navigate to this Page`
+
+<ParamField path="options" type="NavigationOptions">
+  Per-call navigation options. `waitUntil` is applied to `page.goto()`; `waitForLoadState` is not used.
+</ParamField>
+
+<Note>
+  After `page.goto()` completes, `gotoThisPage` calls all actions returned by `pageActionsToPerformAfterNavigation()` in order. Use this hook to perform login steps, dismiss banners, or wait for lazy-loaded content that should be considered part of "arriving" on the page.
+</Note>
+
+---
+
+### `expectThisPage(options?)`
+
+Asserts that the browser is currently on this page's `fullUrl`. Uses `page.waitForURL()` followed by a polled `expect` assertion. After the URL assertion passes, it also executes `pageActionsToPerformAfterNavigation()`.
+
+```ts
+// After a redirect lands you on the login page
+await loginPage.navigation.expectThisPage();
+
+// With a custom wait
+await loginPage.navigation.expectThisPage({ waitUntil: "domcontentloaded" });
+```
+
+Step title: `<label>: Expect this Page`
+
+<ParamField path="options" type="NavigationOptions">
+  Per-call options. `waitUntil` is passed to `page.waitForURL()`.
+</ParamField>
+
+---
+
+### `expectAnotherPage(options?)`
+
+Asserts that the browser has navigated away from this page's `fullUrl`. Polls until the current URL no longer equals `fullUrl`.
+
+```ts
+// Confirm login redirected away from the login page
+await loginPage.navigation.expectAnotherPage();
+```
+
+Step title: `<label>: Expect any other Page`
+
+<ParamField path="options" type="NavigationOptions">
+  Per-call options. `waitForLoadState` is applied before asserting the URL; `waitUntil` is not used.
+</ParamField>
+
+---
+
+## RegExp `fullUrl` — `NavigationRegExp`
+
+When either `baseUrl` or `urlPath` is a `RegExp`, the compiled `fullUrl` is also a `RegExp`. In this case the helper type is narrowed to `NavigationRegExp`, which exposes only the two assertion methods. `goto` and `gotoThisPage` are not available.
+
+```ts
+class DynamicPage extends PageObject<LocatorPaths, { urlPathType: RegExp }> {
+  constructor(page: Page) {
+    super(page, "https://example.com", /\/items\/\d+/);
+  }
+  // ...
+}
+
+// Only assertion methods are available:
+await dynamicPage.navigation.expectThisPage();
+await dynamicPage.navigation.expectAnotherPage();
+```
+
+### `expectThisPage(options?)`
+
+Asserts that the current URL matches the `fullUrl` RegExp using `page.waitForURL()` and a polled `expect().toMatch()` assertion.
+
+<ParamField path="options" type="NavigationOptions">
+  Per-call options. `waitUntil` is passed to `page.waitForURL()`.
+</ParamField>
+
+### `expectAnotherPage(options?)`
+
+Asserts that the current URL does **not** match the `fullUrl` RegExp using a polled `expect().not.toMatch()` assertion.
+
+<ParamField path="options" type="NavigationOptions">
+  Per-call options. `waitForLoadState` is applied before asserting the URL.
+</ParamField>
+
+---
+
+## `pageActionsToPerformAfterNavigation()` hook
+
+This abstract method on `PageObject` returns an array of async callbacks (or `null`) that are executed after `gotoThisPage()` and `expectThisPage()` complete their URL checks. Use it to encode page-specific post-load actions that should be considered part of "landing" on the page.
+
+```ts
+class DashboardPage extends PageObject<LocatorPaths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/dashboard");
+  }
+
+  protected defineLocators() { /* ... */ }
+
+  protected pageActionsToPerformAfterNavigation() {
+    return [
+      async () => {
+        // Wait for the loading spinner to disappear
+        await this.getLocator("dashboard.loadingSpinner").waitFor({ state: "hidden" });
+      },
+      async () => {
+        // Dismiss the welcome modal if present
+        const modal = this.getLocator("dashboard.welcomeModal");
+        if (await modal.isVisible()) {
+          await this.getLocator("dashboard.welcomeModalClose").click();
+        }
+      },
+    ];
+  }
+}
+```
+
+<Tip>
+  Return `null` from `pageActionsToPerformAfterNavigation()` when the page needs no post-navigation setup. Both `gotoThisPage` and `expectThisPage` safely skip the action loop when the list is empty or null.
+</Tip>
+
+---
+
+## Default navigation options via `navOptions`
+
+You can set page-level defaults for `waitUntil` and `waitForLoadState` by passing `navOptions` in the `PageObject` constructor. Per-call options take precedence over these defaults; the helper falls back to `"load"` when neither the call-level nor the page-level option is set.
+
+```ts
+class SlowPage extends PageObject<LocatorPaths> {
+  constructor(page: Page) {
+    super(page, "https://example.com", "/slow", {
+      label: "SlowPage",
+      navOptions: {
+        waitUntil: "networkidle",
+        waitForLoadState: "networkidle",
+      },
+    });
+  }
+
+  protected defineLocators() { /* ... */ }
+  protected pageActionsToPerformAfterNavigation() { return null; }
+}
+```
+
+```ts
+// Uses page-level default: waitUntil = "networkidle"
+await slowPage.navigation.gotoThisPage();
+
+// Overrides for this call only: waitUntil = "domcontentloaded"
+await slowPage.navigation.gotoThisPage({ waitUntil: "domcontentloaded" });
+```
+
+Option resolution order (highest to lowest priority):
+
+1. Per-call `options` argument
+2. `navOptions` passed to the `PageObject` constructor
+3. Framework default (`"load"`)

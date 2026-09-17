@@ -1,0 +1,275 @@
+---
+title: "SessionStorage Class — Full API Reference POMWright"
+sidebarTitle: "SessionStorage"
+description: "Full reference for SessionStorage: constructor, set, setOnNextNavigation, get, and clear with all overload signatures and waitForContext options."
+---
+
+The `SessionStorage` class provides step-wrapped access to the browser's `window.sessionStorage` within Playwright tests. Every method executes inside a `test.step` call, making operations visible in the Playwright HTML report. The class is available as `PageObject.sessionStorage` on any page object, or you can instantiate it directly as a standalone fixture.
+
+## Constructor
+
+```ts
+import { SessionStorage } from "pomwright";
+
+const storage = new SessionStorage(page, { label: "LoginPage" });
+```
+
+<ParamField path="page" type="Page" required>
+  The Playwright `Page` instance to operate on.
+</ParamField>
+
+<ParamField path="options" type="SessionStorageOptions">
+  Optional configuration object.
+  <Expandable title="SessionStorageOptions">
+    <ParamField path="options.label" type="string">
+      A prefix string used in step titles. When provided, step titles follow the pattern `<label>.SessionStorage.<method>:`. When omitted the prefix is dropped and titles read `SessionStorage.<method>:`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Step title format
+
+Every method wraps its work in a named `test.step`. The title is derived from the optional label:
+
+```text
+LoginPage.SessionStorage.set:
+LoginPage.SessionStorage.get:
+LoginPage.SessionStorage.clear:
+LoginPage.SessionStorage.setOnNextNavigation:
+```
+
+When no label is provided the leading segment is omitted:
+
+```text
+SessionStorage.set:
+```
+
+---
+
+## Methods
+
+### `set(states, options?)`
+
+Writes one or more key/value pairs to session storage. Values are serialised with `JSON.stringify` before storage. Optionally reloads the page after writing and/or waits for a valid execution context before proceeding.
+
+```ts
+// Basic write
+await storage.set({ token: "abc123", theme: "dark" });
+
+// Reload the page after writing
+await storage.set({ token: "abc123" }, { reload: true });
+
+// Wait for a context to become available before writing
+await storage.set({ token: "abc123" }, { waitForContext: true });
+```
+
+<ParamField path="states" type="Record<string, T>" required>
+  An object whose keys are session storage keys and whose values are the data to store. Each value is JSON-serialised before writing.
+</ParamField>
+
+<ParamField path="options" type="SetOptions">
+  Optional write options.
+  <Expandable title="SetOptions">
+    <ParamField path="options.reload" type="boolean">
+      When `true`, calls `page.reload()` after the write completes.
+    </ParamField>
+    <ParamField path="options.waitForContext" type="boolean">
+      When `true`, waits for the next main-frame navigation and validates that a usable `window.sessionStorage` context exists before writing. When `false` (default) and no context is available, the call throws immediately.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<Warning>
+  If `waitForContext` is omitted or `false` and the page has no active execution context, `set` throws:
+
+  ```text
+  SessionStorage context is not available.
+  ```
+</Warning>
+
+---
+
+### `setOnNextNavigation(states)`
+
+Queues key/value pairs to be written to session storage immediately after the next main-frame navigation. This is useful when you need to seed storage before a page load that would otherwise clear it.
+
+```ts
+// Queue a single entry
+await storage.setOnNextNavigation({ theme: "dark" });
+
+// Queue additional entries — they are merged with earlier queued entries
+await storage.setOnNextNavigation({ token: "abc123" });
+// Both { theme: "dark" } and { token: "abc123" } will be written after the next navigation.
+```
+
+<ParamField path="states" type="Record<string, T>" required>
+  Key/value pairs to queue. Multiple calls before navigation occurs are merged together; later calls overwrite duplicate keys.
+</ParamField>
+
+**Queueing behaviour:**
+
+- A single `framenavigated` listener is registered on the first call; subsequent calls before navigation only extend the queue.
+- On navigation, queued states are written and the queue is cleared.
+- The listener is removed after it fires, so it only triggers once per `setOnNextNavigation` sequence.
+
+---
+
+### `get(keys?, options?)`
+
+Reads values from session storage. When `keys` is provided only the matching entries are returned; otherwise the full storage contents are returned as a plain object. Values are deserialised with `JSON.parse`.
+
+**Overloads:**
+
+```ts
+// Read everything
+const all = await storage.get();
+
+// Read specific keys
+const subset = await storage.get(["token", "theme"]);
+
+// Read with context waiting
+const subset = await storage.get(["token"], { waitForContext: true });
+```
+
+<ParamField path="keys" type="string[]">
+  An optional array of keys to retrieve. When omitted (or empty), all session storage entries are returned.
+</ParamField>
+
+<ParamField path="options" type="WaitForContextOptions">
+  Optional read options.
+  <Expandable title="WaitForContextOptions">
+    <ParamField path="options.waitForContext" type="boolean">
+      When `true`, waits for the next main-frame navigation and a usable execution context before reading. When `false` (default) and no context is available, the call throws immediately.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns:** `Promise<Record<string, T>>` — an object containing the requested entries.
+
+<Warning>
+  If `waitForContext` is omitted or `false` and the page has no active execution context, `get` throws:
+
+  ```text
+  SessionStorage context is not available.
+  ```
+</Warning>
+
+---
+
+### `clear(keysOrOptions?, options?)`
+
+Removes entries from session storage. Accepts four overload forms depending on whether you want to clear everything or only specific keys.
+
+**Overloads:**
+
+```ts
+// Clear all entries
+await storage.clear();
+
+// Clear all entries, waiting for context first
+await storage.clear({ waitForContext: true });
+
+// Clear a single key
+await storage.clear("token");
+
+// Clear multiple keys
+await storage.clear(["token", "theme"]);
+
+// Clear specific keys, waiting for context first
+await storage.clear(["token", "theme"], { waitForContext: true });
+```
+
+<ParamField path="keysOrOptions" type="string | string[] | WaitForContextOptions">
+  One of:
+  - A single key `string` to remove.
+  - An array of key `string[]` values to remove.
+  - A `WaitForContextOptions` object when you want to clear everything but need to pass context options.
+  - Omitted entirely to clear all entries with no special options.
+</ParamField>
+
+<ParamField path="options" type="WaitForContextOptions">
+  Context options when the first argument is a key or key array.
+  <Expandable title="WaitForContextOptions">
+    <ParamField path="options.waitForContext" type="boolean">
+      When `true`, waits for the next main-frame navigation and a usable execution context before clearing. When `false` (default) and no context is available, the call throws immediately.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<Warning>
+  If `waitForContext` is omitted or `false` and the page has no active execution context, `clear` throws:
+
+  ```text
+  SessionStorage context is not available.
+  ```
+</Warning>
+
+---
+
+## Context handling
+
+Internally, `SessionStorage` evaluates `typeof window !== "undefined" && window.sessionStorage !== undefined` to check for a usable context. If the context is destroyed (for example, mid-navigation) and `waitForContext: true` is set, the helper attaches a `framenavigated` listener and retries the context check on each main-frame navigation until one succeeds.
+
+<Info>
+  You typically need `waitForContext: true` when calling storage methods immediately before or during a page load — for example, seeding state before the application's own initialisation code runs.
+</Info>
+
+---
+
+## Usage via `PageObject.sessionStorage`
+
+Every `PageObject` subclass automatically instantiates a `SessionStorage` at `this.sessionStorage`. The label is set to the page object's `label` (which defaults to the class name).
+
+```ts
+import { test, expect } from "./fixtures";
+
+test("seed auth token before login page loads", async ({ loginPage }) => {
+  await loginPage.navigation.gotoThisPage();
+
+  // Write immediately — context is already available
+  await loginPage.sessionStorage.set({ token: "abc123" }, { reload: true });
+
+  // Read it back
+  const data = await loginPage.sessionStorage.get(["token"]);
+  expect(data.token).toBe("abc123");
+
+  // Queue for next navigation
+  await loginPage.sessionStorage.setOnNextNavigation({ theme: "dark" });
+
+  // Clear a single key
+  await loginPage.sessionStorage.clear("token");
+});
+```
+
+---
+
+## Usage as a standalone fixture
+
+You can instantiate `SessionStorage` directly when you need it outside of a `PageObject`.
+
+```ts
+import { test as base } from "pomwright";
+import { SessionStorage } from "pomwright";
+
+type Fixtures = { sessionStorage: SessionStorage };
+
+export const test = base.extend<Fixtures>({
+  sessionStorage: async ({ page }, use) => {
+    await use(new SessionStorage(page, { label: "SessionStorage" }));
+  },
+});
+```
+
+```ts
+import { test, expect } from "./fixtures";
+
+test("standalone session storage fixture", async ({ page, sessionStorage }) => {
+  await page.goto("https://example.com");
+  await sessionStorage.set({ featureFlag: true });
+
+  const data = await sessionStorage.get(["featureFlag"]);
+  expect(data.featureFlag).toBe(true);
+
+  await sessionStorage.clear();
+});
+```

@@ -1,0 +1,71 @@
+---
+title: "POMWright: TypeScript Companion for Playwright POM"
+sidebarTitle: "Introduction"
+description: "POMWright formalizes Playwright's Page Object Model with a typed locator registry, automatic chaining, session storage helpers, structured logging, and a @step() decorator."
+---
+
+POMWright is a TypeScript companion framework for Playwright that brings structure and safety to the Page Object Model. It eliminates the manual, error-prone work of writing and maintaining locator chains by encoding your page's DOM structure into a typed registry — so every selector is defined once and composed automatically. Whether you're working on a small project or a large multi-team test suite, POMWright scales with you by providing consistent patterns, compile-time path validation, and a set of optional helpers that can be adopted incrementally.
+
+## Why POMWright Exists
+
+Playwright's official guidance emphasises locator chaining for resilience and clarity. In practice, maintaining those chains by hand becomes tedious as pages grow. Consider a "Change" button inside a password section inside a credentials form: in a vanilla POM you write that chain three times — once per locator — and when the DOM changes you update each one individually.
+
+POMWright's `LocatorRegistry` solves this by letting you register one locator per semantic path, such as `"main.form@credentials.button@changePassword"`, and then **automatically builds the full chain** from those definitions every time you call `getNestedLocator(...)`. Update a single registry entry and every chain that passes through it updates too.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install POMWright, create your first Page Object, wire a fixture, and run a test in minutes.
+  </Card>
+  <Card title="PageObject Class" icon="cube" href="/concepts/page-object">
+    Explore the abstract base class that ties together locator registry, navigation, and session storage.
+  </Card>
+  <Card title="Locator Registry" icon="list-tree" href="/concepts/locator-registry">
+    Learn how typed paths, fluent registration, and automatic chaining work under the hood.
+  </Card>
+  <Card title="API Reference: PageObject" icon="code" href="/api/page-object">
+    Full API reference for PageObject, its accessors, and the navigation and session storage helpers.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Typed Locator Paths" icon="tag">
+    Paths are a TypeScript literal union. Misspell a path and the compiler tells you immediately — no more silent locator failures at runtime.
+  </Card>
+  <Card title="Automatic Locator Chaining" icon="link">
+    `getNestedLocator("a.b.c")` resolves `a → b → c` automatically. You define each segment once; POMWright composes the full chain.
+  </Card>
+  <Card title="Safer Refactors" icon="wrench">
+    Update a locator definition in one place and every chain that includes it updates automatically. Rename a path segment with find-and-replace across your typed union.
+  </Card>
+  <Card title="Non-Mutating Query Overrides" icon="sliders">
+    `getLocatorSchema(path).update(...).filter(...).nth(...)` lets you handle edge cases, iterations, and variations without touching the base registry definition.
+  </Card>
+  <Card title="Reusable Locator Seeds" icon="recycle">
+    `createReusable` defines a locator strategy once and references it across multiple paths. Avoid duplicating definitions for shared components.
+  </Card>
+  <Card title="Composable Locator Modules" icon="puzzle-piece">
+    Move `Paths` and `add(...)` calls into a companion `*.locators.ts` file. Share definitions across Page Objects without inheritance.
+  </Card>
+</CardGroup>
+
+## Vanilla Playwright POM vs POMWright
+
+In a standard Playwright POM, you declare every locator as a class property and manually chain each one from its parent — `this.loginForm = this.main.getByRole(...)`, `this.usernameInput = this.loginForm.getByLabel(...)`. When the DOM changes, you trace those property dependencies and update each one. If two methods use a similar structure but differ slightly, you add more fields.
+
+POMWright replaces that approach with a registry. Each locator is a named entry keyed by a dotted semantic path. There are no stored `Locator` fields — only the registry entries. At call time, `getNestedLocator("main.form@login.input@username")` chains `main → form@login → input@username` on the fly. The path string is the documentation, the type system is the guardrail, and the registry is the single source of truth for page structure.
+
+The result is less boilerplate in the constructor, fewer inter-field dependencies, and a codebase where structural intent is explicit at every call site.
+
+## Install POMWright
+
+```bash
+npm install --save-dev pomwright
+# or
+pnpm add -D pomwright
+# or
+yarn add --dev pomwright
+```
+
+POMWright requires `@playwright/test` `>=1.57.0 <2.0.0` as a peer dependency. No configuration file is needed — import directly from `'pomwright'`.

@@ -1,5 +1,5 @@
 ---
-title: "Managing Session Storage in Playwright Tests"
+title: "Managing Session Storage in Playwright Tests with POMWright"
 sidebarTitle: "Session Storage"
 description: "Set, queue, read, and clear window.sessionStorage in Playwright tests using POMWright's SessionStorage helper, with waitForContext support."
 ---
@@ -154,10 +154,13 @@ export const test = base.extend<Fixtures>({
 });
 ```
 
-The `label` option is optional. When provided, it prefixes every step title:
+The `label` option is optional. Without a label, step titles use the format `SessionStorage.<method>:`. When a label is provided, it is prepended with a dot separator:
 
 ```
+// label not set
 SessionStorage.set:
+
+// label: "LoginPage"
 LoginPage.SessionStorage.get:
 ```
 

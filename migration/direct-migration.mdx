@@ -1,5 +1,5 @@
 ---
-title: "Direct v1 to v2 Migration Guide for POMWright"
+title: "POMWright v1 to v2 Direct Migration Step-by-Step Guide"
 sidebarTitle: "Direct Migration"
 description: "Step-by-step instructions for migrating POMWright page objects directly from v1 BasePage to v2 PageObject, with before-and-after code for every change."
 ---
@@ -457,9 +457,8 @@ this.locators.addSchema("main.confirmation.orderItem.details@activationTime", {
 ```
 
 ```ts v2 — createReusable
-import type { LocatorRegistry } from "pomwright";
-
-const orderItemDetails = createReusable.locator(".order-item-details");
+// createReusable is available on the protected locatorRegistry property
+const orderItemDetails = this.locatorRegistry.createReusable.locator(".order-item-details");
 
 this.add("main.confirmation.orderItem.details", { reuse: orderItemDetails });
 

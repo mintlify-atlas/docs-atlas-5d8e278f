@@ -11,7 +11,8 @@ POMWright ships a `PlaywrightReportLogger` class and a built-in `test` fixture t
 When you import `test` from `pomwright`, a `log` fixture is automatically available in every test:
 
 ```ts
-import { test, expect } from "pomwright";
+import { test } from "pomwright";
+import { expect } from "@playwright/test";
 
 test("logs are attached to the HTML report", async ({ page, log }) => {
   log.info("navigating to login");

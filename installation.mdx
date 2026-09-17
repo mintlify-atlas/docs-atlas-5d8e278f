@@ -40,19 +40,23 @@ bun add --dev pomwright
 
 ## TypeScript Requirements
 
-POMWright is written in TypeScript and ships its own type declarations. No `@types/pomwright` package is needed. The package targets the TypeScript 5.x compiler. Your `tsconfig.json` must include `"experimentalDecorators": true` to use the `@step()` decorator, which wraps class methods in `test.step`.
+POMWright is written in TypeScript and ships its own type declarations. No `@types/pomwright` package is needed. The package targets the TypeScript 5.x compiler.
+
+The `@step()` decorator works with **both** the modern TC39 Stage 3 decorator standard (the default in TypeScript 5+) and the legacy `experimentalDecorators` format. You do not need to add `"experimentalDecorators": true` to your `tsconfig.json` — POMWright detects which calling convention is in use at runtime and handles both.
+
+A minimal `tsconfig.json` for a POMWright project looks like this:
 
 ```json tsconfig.json
 {
   "compilerOptions": {
-    "experimentalDecorators": true,
+    "target": "es2022",
     "strict": true
   }
 }
 ```
 
 <Note>
-  If you are using TypeScript 5.0+ with the new ECMAScript decorator standard (`"experimentalDecorators": false`), the `@step()` decorator still requires `"experimentalDecorators": true` because it relies on the legacy TypeScript decorator metadata format used by Playwright's `test.step` integration.
+  If your project already uses `"experimentalDecorators": true` for other libraries, `@step()` will continue to work correctly — it handles both decorator calling conventions transparently.
 </Note>
 
 ## Package Exports

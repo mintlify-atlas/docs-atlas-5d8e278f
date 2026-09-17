@@ -1,7 +1,7 @@
 ---
 title: "POMWright: TypeScript Companion for Playwright POM"
 sidebarTitle: "Introduction"
-description: "POMWright formalizes Playwright's Page Object Model with a typed locator registry, automatic chaining, session storage helpers, structured logging, and a @step() decorator."
+description: "POMWright adds a typed locator registry, automatic chaining, session storage, structured logging, and a @step() decorator to Playwright Page Objects."
 ---
 
 POMWright is a TypeScript companion framework for Playwright that brings structure and safety to the Page Object Model. It eliminates the manual, error-prone work of writing and maintaining locator chains by encoding your page's DOM structure into a typed registry — so every selector is defined once and composed automatically. Whether you're working on a small project or a large multi-team test suite, POMWright scales with you by providing consistent patterns, compile-time path validation, and a set of optional helpers that can be adopted incrementally.
@@ -30,22 +30,22 @@ POMWright's `LocatorRegistry` solves this by letting you register one locator pe
 ## Key Features
 
 <CardGroup cols={2}>
-  <Card title="Typed Locator Paths" icon="tag">
+  <Card title="Typed Locator Paths" icon="tag" href="/concepts/locator-registry">
     Paths are a TypeScript literal union. Misspell a path and the compiler tells you immediately — no more silent locator failures at runtime.
   </Card>
-  <Card title="Automatic Locator Chaining" icon="link">
+  <Card title="Automatic Locator Chaining" icon="link" href="/concepts/locator-registry">
     `getNestedLocator("a.b.c")` resolves `a → b → c` automatically. You define each segment once; POMWright composes the full chain.
   </Card>
-  <Card title="Safer Refactors" icon="wrench">
+  <Card title="Safer Refactors" icon="wrench" href="/concepts/locator-registry">
     Update a locator definition in one place and every chain that includes it updates automatically. Rename a path segment with find-and-replace across your typed union.
   </Card>
-  <Card title="Non-Mutating Query Overrides" icon="sliders">
+  <Card title="Non-Mutating Query Overrides" icon="sliders" href="/concepts/locator-registry">
     `getLocatorSchema(path).update(...).filter(...).nth(...)` lets you handle edge cases, iterations, and variations without touching the base registry definition.
   </Card>
-  <Card title="Reusable Locator Seeds" icon="recycle">
+  <Card title="Reusable Locator Seeds" icon="recycle" href="/guides/composing-locator-modules">
     `createReusable` defines a locator strategy once and references it across multiple paths. Avoid duplicating definitions for shared components.
   </Card>
-  <Card title="Composable Locator Modules" icon="puzzle-piece">
+  <Card title="Composable Locator Modules" icon="puzzle-piece" href="/guides/composing-locator-modules">
     Move `Paths` and `add(...)` calls into a companion `*.locators.ts` file. Share definitions across Page Objects without inheritance.
   </Card>
 </CardGroup>

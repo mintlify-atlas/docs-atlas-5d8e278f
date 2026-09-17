@@ -1,7 +1,7 @@
 ---
-title: "PageObject: The POMWright Base Class Explained"
+title: "POMWright PageObject: Base Class Guide and Reference"
 sidebarTitle: "PageObject"
-description: "Learn how PageObject wires a Playwright Page to the locator registry, navigation helper, and session storage — and how to implement its two required abstract methods."
+description: "PageObject wires a Playwright Page to a typed locator registry, navigation helper, and session storage — all from a single super() call."
 ---
 
 `PageObject` is the minimal abstract base class at the heart of POMWright. Every page you model extends it, and in return you get a fully typed locator registry, a navigation helper scoped to your page's URL, and a session storage helper — all wired to a single Playwright `Page` instance from a single `super()` call. There is intentionally little magic: you declare your locators in `defineLocators()`, declare your post-navigation actions in `pageActionsToPerformAfterNavigation()`, and compose any additional behavior on top.

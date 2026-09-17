@@ -1,5 +1,5 @@
 ---
-title: "Recommended Project Structure for POMWright"
+title: "Recommended Project Structure and Layout for POMWright"
 sidebarTitle: "Project Structure"
 description: "Practical folder layout, naming conventions, and guidance on when to split PageObjects into companion locator files for scalable POMWright projects."
 ---
@@ -200,7 +200,7 @@ export const test = base.extend<Fixtures>({
   },
 });
 
-export { expect } from "pomwright";
+export { expect } from "@playwright/test";
 ```
 
 A root `all.fixtures.ts` can re-export from all domain fixture files so tests import from a single location:

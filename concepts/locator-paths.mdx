@@ -1,7 +1,7 @@
 ---
-title: "Locator Paths: Typed Schema Paths in POMWright"
+title: "Locator Paths: POMWright Schema Path Types and Rules"
 sidebarTitle: "Locator Paths"
-description: "Explore POMWright's typed locator schema paths: dot-delimited string unions, compile-time and runtime format rules, the @-separator convention, and sub-path utility types."
+description: "POMWright locator paths are dot-delimited typed strings validated at compile time and runtime. Learn format rules, the @-separator, and utility types."
 ---
 
 Every locator in POMWright is keyed by a dot-delimited string called a **locator schema path**. Paths are not plain strings — they are members of a typed string literal union that POMWright validates structurally at both compile time and runtime. This means mistyped paths cause TypeScript errors before tests ever run, and invalid paths passed at runtime throw descriptive errors rather than silently resolving to the wrong element.
@@ -27,16 +27,16 @@ Each string in the union must satisfy the `LocatorSchemaPathFormat<S>` constrain
 The `LocatorSchemaPathFormat<S>` type enforces four structural rules, applied both at compile time through recursive conditional types and at runtime through `validateLocatorSchemaPath`:
 
 <CardGroup cols={2}>
-  <Card title="No empty string" icon="ban">
+  <Card title="No empty string" icon="ban" href="#runtime-validation">
     The path must contain at least one character. An empty string `""` is immediately rejected.
   </Card>
-  <Card title="No leading or trailing dot" icon="circle-dot">
+  <Card title="No leading or trailing dot" icon="circle-dot" href="#runtime-validation">
     Paths must not start with `"."` or end with `"."`. A trailing dot implies a missing segment; a leading dot implies a missing root.
   </Card>
-  <Card title="No consecutive dots" icon="ellipsis">
+  <Card title="No consecutive dots" icon="ellipsis" href="#runtime-validation">
     `"main..form"` contains an empty segment and is invalid. Every dot must separate two non-empty segments.
   </Card>
-  <Card title="No Unicode whitespace" icon="space-awesome">
+  <Card title="No Unicode whitespace" icon="font" href="#runtime-validation">
     All 25 Unicode characters with `White_Space=Yes` — including `\t`, `\n`, no-break space, and ideographic space — are forbidden anywhere in the path.
   </Card>
 </CardGroup>
@@ -55,7 +55,7 @@ type LocatorSchemaPathError<S extends string, Reason extends string> = [
 
 For example, using `".main.form"` as a path produces:
 
-```
+```ts
 ["Invalid locator schema path", "String can't start with '.'", ".main.form"]
 ```
 
@@ -153,7 +153,7 @@ const locator = registry
 
 If you supply a sub-path that is not a valid ancestor of the root path, the builder throws:
 
-```
+```text
 "some.other.path" is not a valid sub-path of "main.form@login.input@username".
 ```
 

@@ -1,7 +1,7 @@
 ---
 title: "Locator Registry: Registration and Resolution in POMWright"
 sidebarTitle: "Locator Registry"
-description: "Understand the POMWright locator registry mental model, all 10 strategy methods, post-definition steps, and how getLocator vs getNestedLocator resolve locator chains."
+description: "Understand how POMWright's locator registry stores and resolves all 10 strategy methods, post-definition steps, and full nested locator chains."
 ---
 
 The locator registry is the core of POMWright's Page Object Model. Rather than scattering raw Playwright locator calls across your test helpers, you declare each element once at a typed path, and the registry resolves it consistently everywhere it is needed. Every locator is defined exactly once, validated at the path level both at compile time and at runtime, and resolved on demand — either as a standalone terminal locator or as a fully chained nested locator traversing every ancestor in the path.
@@ -16,7 +16,7 @@ Think of the registry as three parallel maps, all keyed by the same dot-delimite
 
 When you call `getLocator("main.form@login.input@username")` the registry looks up only that one terminal entry and resolves it. When you call `getNestedLocator("main.form@login.input@username")` it expands the path into the chain `["main", "main.form@login", "main.form@login.input@username"]`, resolves each registered segment in order, and chains each result onto the previous one — so the final locator is scoped within its DOM ancestors.
 
-```
+```text
 getLocator("main.form@login.input@username")
   └─ getByLabel("Username")                        ← terminal only
 
@@ -181,7 +181,7 @@ After a strategy is set, three additional methods are available on the chain:
 
 A path can only be registered once. Registering the same path again throws with a full diff of the existing versus attempted schema:
 
-```
+```text
 A locator schema with the path "main.button" already exists.
 Existing Schema: { ... }
 ```
